@@ -1796,6 +1796,7 @@ class PolicyTrainerRayProcess(RayProcess):
         if self._rank == 0:
             os.makedirs(output_dir, exist_ok=True)
         dist.barrier()
+
         with FSDP.summon_full_params(model_to_save):
             if self._rank == 0:
                 if is_peft_model(model_to_save):
@@ -1807,7 +1808,6 @@ class PolicyTrainerRayProcess(RayProcess):
             dist.barrier()
 
         if self._rank == 0:
-            # Save HF config and tokenizer on rank 0
             hf_path = os.path.join(output_dir, 'huggingface')
             os.makedirs(hf_path, exist_ok=True)
             if hasattr(model_to_save, "config"):
@@ -1815,7 +1815,6 @@ class PolicyTrainerRayProcess(RayProcess):
                     model_to_save._fsdp_wrapped_module.config.save_pretrained(hf_path)
                 else:
                     model_to_save.config.save_pretrained(hf_path)
-            # Save the processor
             processor.save_pretrained(output_dir)
 
         dist.barrier()
