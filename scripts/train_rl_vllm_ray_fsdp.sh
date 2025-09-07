@@ -119,7 +119,7 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --save_freq 10 \
     --eval_freq 10 \
     --save_video True \
-    --use_wandb False \
+    --use_wandb True \
     --wandb_offline False \
     --wandb_project openvla \
     --wandb_entity openvla_cvpr \

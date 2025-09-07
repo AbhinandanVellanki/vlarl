@@ -302,6 +302,8 @@ class Args:
     """The number of training_steps to train"""
     eval_freq: Optional[int] = 10
     """The frequency of evaluation steps"""
+    init_eval: Optional[bool] = True
+    """Whether to do initial evaluation before training"""
     save_freq: int = -1
     """How many train steps to save the model"""
     num_epochs: int = 1
@@ -837,20 +839,15 @@ class PolicyTrainerRayProcess(RayProcess):
 
         completed_episodes = 0
         total_successes = 0
-        episode_lengths = []
-        episode_returns = []
+        episodic_lengths = []
+        episodic_returns = []
         
-        # Calculate total expected episodes
         total_expected_episodes = args.num_trials_per_task * args.num_tasks_per_suite
-        
-        # Initialize progress bar
         pbar = tqdm.tqdm(
             total=total_expected_episodes,
             desc="[Eval] Episodes",
             dynamic_ncols=True,
             disable=(self._rank != 0)
-            # position=0,
-            # leave=True,
         )
         obs, infos = eval_envs.reset()
 
@@ -897,9 +894,8 @@ class PolicyTrainerRayProcess(RayProcess):
                 total_successes += new_successes
                 for i, (r, d) in enumerate(zip(rewards, dones)):
                     if d:
-                        episode_returns.append(r)
-                        episode_length = eval_envs.step_counts[i]
-                        episode_lengths.append(episode_length)
+                        episodic_returns.append(r)
+                        episodic_lengths.append(infos["step_counts"][i])
 
                 current_success_rate = total_successes / completed_episodes if completed_episodes > 0 else 0.0
                 pbar.update(new_episodes)
@@ -920,22 +916,21 @@ class PolicyTrainerRayProcess(RayProcess):
 
         pbar.close()
         
-        # Calculate final statistics
         final_success_rate = total_successes / completed_episodes if completed_episodes > 0 else 0.0
-        avg_episode_length = np.mean(episode_lengths) if episode_lengths else 0.0
-        avg_episode_return = np.mean(episode_returns) if episode_returns else 0.0
-        
+        avg_episodic_length = np.mean(episodic_lengths) if episodic_lengths else 0.0
+        avg_episodic_return = np.mean(episodic_returns) if episodic_returns else 0.0
+
         eval_stats = {
             'success_rate': final_success_rate,
             'num_episodes': completed_episodes,
             'total_successes': total_successes,
-            'episode_length': avg_episode_length,
-            'episode_return': avg_episode_return,
+            'episodic_length': avg_episodic_length,
+            'episodic_return': avg_episodic_return,
         }
         logger.info(f"[Eval] Completed parallel evaluation: "
                     f"Episodes: {completed_episodes}, Successes: {total_successes}, "
                     f"Success rate: {final_success_rate:.3f}, "
-                    f"Avg episode length: {avg_episode_length:.1f}")
+                    f"Avg episode length: {avg_episodic_length:.1f}")
         self.model.train()
         if args.use_value_model:
             self.value_model.train()
@@ -1025,7 +1020,6 @@ class PolicyTrainerRayProcess(RayProcess):
             # model = self.model.module
             model = self.model
 
-            # Get parameter names first without loading full params
             param_names = []
             if is_peft_model(model):
                 with torch.no_grad():
@@ -1160,7 +1154,7 @@ class PolicyTrainerRayProcess(RayProcess):
                         unnorm_key=args.unnorm_key,
                         )
                 )
-                logger.info(f"🔥🔥🔥 Action generation time: {time.time() - generation_start_time:.2f} seconds")
+                # logger.info(f"🔥🔥🔥 Action generation time: {time.time() - generation_start_time:.2f} seconds")
                 response_ids_Q.put((actions, response_ids, response_logprobs))
 
         resume_training_step = 1
@@ -1326,21 +1320,22 @@ class PolicyTrainerRayProcess(RayProcess):
         # episodic_lengths = Queue(maxsize=args.local_rollout_batch_size)
 
         # initial eval
-        logger.info(f"[Eval] Running evaluation at training step 0")
-        with timer.timer("evaluation"):
-            eval_metrics = self.evaluate(
-                eval_envs=eval_envs,
-                processor=processor,
-                prompt_ids_Q=prompt_ids_Q_eval,
-                response_ids_Q=response_ids_Q_eval,
-                device=device,
-            )
-        eval_metrics = {"eval/"+k: v for k, v in eval_metrics.items()}
-        metrics_queue.put((eval_metrics, global_step))
-        logger.info(f"[Eval] Evaluation completed at training step 0")
+        if args.init_eval:
+            logger.info(f"[Eval] Running evaluation at training step 0")
+            with timer.timer("evaluation"):
+                eval_metrics = self.evaluate(
+                    eval_envs=eval_envs,
+                    processor=processor,
+                    prompt_ids_Q=prompt_ids_Q_eval,
+                    response_ids_Q=response_ids_Q_eval,
+                    device=device,
+                )
+            eval_metrics = {"eval/"+k: v for k, v in eval_metrics.items()}
+            metrics_queue.put((eval_metrics, global_step))
+            logger.info(f"[Eval] Evaluation completed at training step 0")
 
         # Begin training loop
-        for training_step in range(resume_training_step, args.num_training_steps):
+        for training_step in range(resume_training_step, args.num_training_steps + 1):
             episodic_returns = []
             episodic_lengths = []
             episode += args.rollout_batch_size  # rollout batch size is the number of parallel environments
@@ -1420,7 +1415,7 @@ class PolicyTrainerRayProcess(RayProcess):
                         else:
                             value = torch.zeros(args.local_rollout_forward_batch_size, device=device)
                         torch.cuda.empty_cache()
-                        logger.info(f"Value time: {time.time() - start_time} seconds")
+                        # logger.info(f"Value time: {time.time() - start_time} seconds")
 
                         # logger.info(f"{value=}")
 
@@ -1912,14 +1907,13 @@ def main(args: Args):
         wandb.init(
             project=args.wandb_project,
             entity=args.wandb_entity,
-            sync_tensorboard=True,
             config=all_configs,
             name=args.exp_id,
             save_code=True,
             mode="offline" if args.wandb_offline else "online",
             # tags=[args.exp_name] + get_wandb_tags(),
         )
-    writer = SummaryWriter(f"logs/tensorboard/{args.exp_id}")
+    writer = SummaryWriter(log_dir=os.path.join(args.exp_dir, "tensorboard"))
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -2007,12 +2001,12 @@ def main(args: Args):
 
     # train and gather metrics
     resume_training_step = 1
-    for training_step in range(resume_training_step, args.num_training_steps):
-    # while True:
+    for _ in range(resume_training_step, args.num_training_steps + 1):
         result = metrics_queue.get()
         metrics, global_step = result
         for key, value in metrics.items():
             writer.add_scalar(key, value, global_step=global_step)
+        wandb.log(metrics, step=global_step)
 
     ray.get(refs)
 

@@ -41,7 +41,7 @@ class LiberoVecEnv(gym.Env):
         self.resize_size = resize_size or (224, 224)
         self.num_trials_per_task = num_trials_per_task
         self.resolution = resolution
-        self.seed = seed
+        self.seed_ = seed
         
         if len(task_ids) < self.num_envs:
             raise ValueError(f"Not enough task_ids ({len(task_ids)}) for n_envs ({self.num_envs})")
@@ -84,11 +84,12 @@ class LiberoVecEnv(gym.Env):
                 "bddl_file_name": bddl_file,
                 "camera_heights": resolution,
                 "camera_widths": resolution,
-                # "seed": self.seed + i,
+                # "seed": self.seed_ + i,
             }
             env_creators.append(lambda args=env_args: OffScreenRenderEnv(**args))
         
         self.envs = SubprocVectorEnv(env_creators)
+        self.envs.seed(self.seed_)
         self.step_counts = np.zeros(self.num_envs)
         
     def _get_max_step(self, task_suite_name: str) -> int:
@@ -162,40 +163,33 @@ class LiberoVecEnv(gym.Env):
                 dummy_actions.append(dummy_action)
             self.envs.reset(id=done_indices.tolist())
             obs = self.envs.set_init_state(new_initial_states, id=done_indices.tolist())
+
             for _ in range(10):
                 obs, _, _, _ = self.envs.step(dummy_actions, id=done_indices.tolist())
+
             for i, done_idx in enumerate(done_indices):
                 obs_list[done_idx] = obs[i]
         
         pixel_values = []
         prompts = []
-        
         for i, obs in enumerate(obs_list):
             img = get_libero_image(obs, self.resize_size)
             pixel_values.append(img)
             prompts.append(self.task_descriptions[i])
-        
         img_list, prompt_list = preprocess_input_batch(
             pixel_values, prompts, 
             pre_thought_list=None, center_crop=True
         )
-        
         env_output = EnvOutput(pixel_values=img_list, prompts=prompt_list)
-        
-        for i, done in enumerate(dones):
-            if done:
-                self.step_counts[i] = 0
-        for i, info in enumerate(infos):
-            info.update({
-                "task_description": self.task_descriptions[i], 
-                "step_count": self.step_counts[i]
-            })
-        
         info = {
             "task_descriptions": prompts,
             "step_counts": self.step_counts.copy(),
         }
         truncated = np.array([False] * self.num_envs)
+
+        for i, done in enumerate(dones):
+            if done:
+                self.step_counts[i] = 0
         return env_output, np.array(rewards), np.array(dones), truncated, info
 
     def close(self):

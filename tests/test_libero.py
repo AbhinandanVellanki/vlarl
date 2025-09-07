@@ -8,8 +8,12 @@ from experiments.robot.libero.libero_utils import (
 from PIL import Image
 import numpy as np
 
+os.environ["MUJOCO_GL"] = "egl" 
+os.environ["PYOPENGL_PLATFORM"] = "egl"
+os.environ["MESA_GL_VERSION_OVERRIDE"] = "4.1"
+
 benchmark_dict = benchmark.get_benchmark_dict()
-task_suite_name = "libero_10" # can also choose libero_spatial, libero_object, etc.
+task_suite_name = "libero_goal" # can also choose libero_spatial, libero_object, etc.
 task_suite = benchmark_dict[task_suite_name]()
 
 # retrieve a specific task
@@ -37,12 +41,16 @@ env.set_init_state(init_states[init_state_id])
 
 dummy_action = [0.] * 7
 for step in range(10):
-    obs, reward, done, info = env.step(dummy_action)
+    # action = dummy_action
+    action = np.random.uniform(0, 1, size=(7,)).tolist()
+    obs, reward, done, info = env.step(action)
     img = get_libero_image(obs, resize_size)
-    pil_img = Image.fromarray(img)
-    img_filename = f"libero_step_{step:02d}.png"
-    img_path = os.path.join(os.path.dirname(__file__), img_filename)
-    pil_img.save(img_path)
-    print(f"Saved image for step {step} to {img_path}")
+    
+    # if step % 5 == 0:
+    #     pil_img = Image.fromarray(img)
+    #     img_filename = f"libero_step_{step:02d}.png"
+    #     img_path = os.path.join(os.path.dirname(__file__), img_filename)
+    #     pil_img.save(img_path)
+    #     print(f"Saved image for step {step} to {img_path}")
 
 env.close()
