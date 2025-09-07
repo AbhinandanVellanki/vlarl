@@ -8,6 +8,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 from termcolor import cprint
 import cv2
+from PIL import Image
 
 
 def check(input):
@@ -122,12 +123,14 @@ def add_info_board(img, **kwargs):
     Add a white information board to the right of an image with flexible content.
     
     Args:
-        img: Input image (numpy array)
+        img: Input image (numpy array or PIL Image)
         **kwargs: Variable key-value pairs to display on the board
         
     Returns:
         combined_img: Image with info board added
     """
+    if isinstance(img, Image.Image):
+        img = np.array(img)
     # Fixed parameters
     board_width = 280
     board_height = img.shape[0]

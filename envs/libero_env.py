@@ -1,4 +1,5 @@
 import os
+import time
 import numpy as np
 import gymnasium as gym
 from typing import Dict, Any, Tuple, List, Optional
@@ -100,6 +101,7 @@ class LiberoVecEnv(gym.Env):
         return task_max_steps.get(task_suite_name, 300)
         
     def reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
+        # reset_start_time = time.time()
         if seed is not None:
             self.seed_val = seed
             np.random.seed(seed)
@@ -120,7 +122,6 @@ class LiberoVecEnv(gym.Env):
         
         pixel_values = []
         prompts = []
-        
         for i, obs in enumerate(obs_list):
             img = get_libero_image(obs, self.resize_size)
             if isinstance(img, Image.Image):
@@ -132,13 +133,12 @@ class LiberoVecEnv(gym.Env):
             pixel_values, prompts, 
             pre_thought_list=None, center_crop=self.center_crop
         )
-        
         env_output = EnvOutput(pixel_values=img_list, prompts=prompt_list)
         info = {
             "task_descriptions": prompts,
             "step_counts": self.step_counts.copy(),
         }
-        
+        # print(f"Env reset time: {time.time() - reset_start_time:.2f} seconds")
         return env_output, info
     
     def step(self, actions, **kwargs):
@@ -152,6 +152,23 @@ class LiberoVecEnv(gym.Env):
         for i in range(self.num_envs):
             if self.step_counts[i] >= self.max_steps:
                 dones[i] = True
+        
+        # Auto-reset environments that are done
+        if np.any(dones):
+            done_indices = np.where(dones)[0]
+            new_initial_states = []
+            dummy_actions = []
+            for i in done_indices:
+                state_id = np.random.randint(0, len(self.initial_states_list[i]))
+                new_initial_states.append(self.initial_states_list[i][state_id])
+                dummy_action = get_libero_dummy_action()
+                dummy_actions.append(dummy_action)
+            self.envs.reset(id=done_indices.tolist())
+            obs = self.envs.set_init_state(new_initial_states, id=done_indices.tolist())
+            for _ in range(10):
+                obs, _, _, _ = self.envs.step(dummy_actions, id=done_indices.tolist())
+            for i, done_idx in enumerate(done_indices):
+                obs_list[done_idx] = obs[i]
         
         pixel_values = []
         prompts = []

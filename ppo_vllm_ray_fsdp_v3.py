@@ -491,16 +491,16 @@ def get_environment(cfg: Args, mode: str = "train"):
         num_envs=cfg.n_rollout_threads,
         seed=cfg.seed,
     )
-    # if cfg.save_video:
-    #     env = VideoWrapper(env, save_dir=cfg.run_root_dir)
-    # if mode == "train" and cfg.use_curriculum:
-    #     env = CurriculumWrapper(
-    #         env,
-    #         temp=cfg.curriculum_temp,
-    #         min_prob=cfg.curriculum_min_prob,
-    #         window_size=cfg.success_history_window,
-    #     )
-    # env = RecordEpisodeStatistics(env)
+    if cfg.save_video:
+        env = VideoWrapper(env, save_dir=cfg.exp_dir)
+    if mode == "train" and cfg.use_curriculum:
+        env = CurriculumWrapper(
+            env,
+            temp=cfg.curriculum_temp,
+            min_prob=cfg.curriculum_min_prob,
+            window_size=cfg.success_history_window,
+        )
+    env = RecordEpisodeStatistics(env)
     return env
 
 class RayProcess:
@@ -1157,7 +1157,7 @@ class PolicyTrainerRayProcess(RayProcess):
                         unnorm_key=args.unnorm_key,
                         )
                 )
-                # logger.info(f"🔥🔥🔥 Action generation time: {time.time() - generation_start_time:.2f} seconds")
+                logger.info(f"🔥🔥🔥 Action generation time: {time.time() - generation_start_time:.2f} seconds")
                 response_ids_Q.put((actions, response_ids, response_logprobs))
 
         resume_training_step = 1
