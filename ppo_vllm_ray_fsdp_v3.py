@@ -891,7 +891,9 @@ class PolicyTrainerRayProcess(RayProcess):
                     if d:
                         episodic_returns.append(r)
                         episodic_lengths.append(infos["step_counts"][i])
-                current_success_rate, current_episodes = eval_envs.get_completed_status()
+                completed_status = eval_envs.get_completed_status()
+                current_success_rate = completed_status["success_rate"]
+                current_episodes = completed_status["completed_episodes"]
                 pbar.n = current_episodes
                 pbar.refresh()
                 pbar.set_postfix({
@@ -903,14 +905,15 @@ class PolicyTrainerRayProcess(RayProcess):
                 break
 
         pbar.close()
-        final_success_rate, final_episodes = eval_envs.get_completed_status()
+        completed_status = eval_envs.get_completed_status()
+        final_success_rate = completed_status["success_rate"]
+        final_episodes = completed_status["completed_episodes"]
         avg_episodic_length = np.mean(episodic_lengths) if episodic_lengths else 0.0
         avg_episodic_return = np.mean(episodic_returns) if episodic_returns else 0.0
         eval_stats = {
-            'success_rate': final_success_rate,
-            'num_episodes': final_episodes,
             'episodic_length': avg_episodic_length,
             'episodic_return': avg_episodic_return,
+            **completed_status,
         }
         logger.info(f"[Eval] Completed parallel evaluation: "
                     f"Episodes: {final_episodes}, "
@@ -1307,6 +1310,7 @@ class PolicyTrainerRayProcess(RayProcess):
                     device=device,
                 )
             eval_metrics = {"eval/"+k: v for k, v in eval_metrics.items()}
+            print_rich_single_line_metrics(eval_metrics)
             metrics_queue.put((eval_metrics, global_step))
             logger.info(f"[Eval] Evaluation completed at training step 0")
         dist.barrier()

@@ -34,7 +34,6 @@ class VideoWrapper(gym.Wrapper):
         self.frames = [[] for _ in range(self.num_envs)]
         self.episode_counts = [0] * self.num_envs
         self.video_counts = [0] * self.num_envs
-        self.current_step = 0        
         self.task_descriptions = env.task_descriptions
         self.replay_images = {i: [] for i in range(self.num_envs)}
         self.total_episodes = 0
@@ -44,16 +43,16 @@ class VideoWrapper(gym.Wrapper):
         
         self.frames = [[] for _ in range(self.num_envs)]
         self.replay_images = {i: [] for i in range(self.num_envs)}
-        self.current_step = 0
 
         pixel_values = obs["pixel_values"]
-        for i in range(min(len(pixel_values), self.num_envs)):
+        # for i in range(min(len(pixel_values), self.num_envs)):
+        for i in range(self.num_envs):
             if self.video_counts[i] < self.max_videos_per_env:
                 img = pixel_values[i]
                 if self.add_info_overlay and self.task_descriptions:
                     img_args = {
                         "goal": self.task_descriptions[i],
-                        "step": self.current_step,
+                        "step": self.env.step_counts[i],
                     }
                     img = add_info_board(img, **img_args)
                 self.frames[i].append(img)
@@ -67,7 +66,6 @@ class VideoWrapper(gym.Wrapper):
         prm_rewards = kwargs.get('prm_rewards', None)
         
         obs, rewards, dones, truncated, info = self.env.step(actions, **kwargs)
-        self.current_step += 1
         
         pixel_values = obs["pixel_values"]
         for i in range(min(len(pixel_values), self.num_envs)):
@@ -77,7 +75,7 @@ class VideoWrapper(gym.Wrapper):
                 if self.add_info_overlay:
                     img_args = {
                         "goal": self.task_descriptions[i],
-                        "step": self.current_step,
+                        "step": self.env.step_counts[i],
                         "action": actions[i],
                     }
                     if self.save_stats:
@@ -90,7 +88,6 @@ class VideoWrapper(gym.Wrapper):
                             img_args["prm_rewards"] = prm_rewards[i]
                     
                     img = add_info_board(img, **img_args)
-                
                 self.frames[i].append(img)
                 self.replay_images[i].append(img)
 
@@ -101,7 +98,6 @@ class VideoWrapper(gym.Wrapper):
                     self._save_video(i, rewards[i])
                     self.video_counts[i] += 1
                     self.total_episodes += 1
-                
                 self.episode_counts[i] += 1
                 self.frames[i] = []
         
@@ -111,14 +107,12 @@ class VideoWrapper(gym.Wrapper):
         """Save video for a specific environment."""
         if not self.frames[env_idx]:
             return
-        
         success = False
         if reward is not None:
             success = reward > 0
         
         task_description = self.task_descriptions[env_idx]
         processed_task_description = task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:50]
-        
         mp4_path = os.path.join(
             self.save_dir, 
             f"rk={self.env_gpu_id}+epi={self.total_episodes}+s={success}+"

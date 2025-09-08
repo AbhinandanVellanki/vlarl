@@ -236,17 +236,24 @@ class LiberoVecEnv(gym.Env):
         return self.task_state_results.copy()
 
     def get_completed_status(self) -> Tuple[float, int]:
-        """
-        Returns:
-            success_rate: float
-            completed_episodes: int
-        """
         if not self.task_state_results:
             return 0.0, 0
         total_pairs = len(self.task_state_results)
         successful_pairs = sum(1 for results in self.task_state_results.values() if results[0])
         success_rate = successful_pairs / total_pairs if total_pairs > 0 else 0.0
-        return success_rate, total_pairs
+        per_task_success_rates = {
+            f"task_{task_id}": sum(1 for (t_id, _), results in self.task_state_results.items()
+                                                if t_id == task_id and results[0]) /
+            sum(1 for (t_id, _ ) in self.task_state_results.keys() if t_id == task_id)
+            for task_id in set(self.task_ids)
+        }
+        infos = {
+            "success_rate": success_rate,
+            "completed_episodes": total_pairs,
+            # per-task success rate
+            **per_task_success_rates,
+        }
+        return infos
 
     def close(self):
         self.envs.close()
