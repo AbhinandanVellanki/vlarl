@@ -116,7 +116,6 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --norm_adv False \
     --use_curriculum True \
     --curriculum_temp 1.0 \
-    --success_history_window 20 \
     --save_freq 10 \
     --eval_freq 10 \
     --init_eval True \

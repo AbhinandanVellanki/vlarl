@@ -141,14 +141,22 @@ class VideoWrapper(gym.Wrapper):
                 self._save_video(i)
         self.env.close()
 
-
+from experiments.robot.robot_utils import normalize_gripper_action, invert_gripper_action
+from experiments.robot.libero.libero_utils import get_libero_dummy_action, get_libero_image
+from experiments.robot.openvla_utils import preprocess_input_batch
+from envs.base import EnvOutput
 class CurriculumWrapper(gym.Wrapper):
+    """
+    An adaptive curriculum that selects tasks based on the agent's current capabilities, which 
+    prioritizes tasks with ~50% success rate as the frontier of the agent's capabilities, 
+    while maintaining exposure to both mastered and challenging tasks, improving sample 
+    efficiency and generalization.
+    """
     def __init__(
         self, 
         env, 
         temp: float = 1.0, 
         min_prob: float = 0.1, 
-        window_size: int = 5,
         recompute_freq: int = 10,
         enable_logging: bool = True,
         exp_dir: str = "./"
@@ -157,126 +165,165 @@ class CurriculumWrapper(gym.Wrapper):
         self.env = env
         self.temp = temp
         self.min_prob = min_prob
-        self.window_size = window_size
+        self.target_success_rate = 0.5
         self.recompute_freq = recompute_freq
         self.enable_logging = enable_logging
         self.exp_dir = exp_dir
-        
-        self.num_envs = env.num_envs
-        self.success_tracker = {}
         self.step_count = 0
-
+        self.num_envs = env.num_envs
         self.task_descriptions = env.task_descriptions
-        self.current_state_ids = [None] * self.num_envs
-        self.task_id_mapping = getattr(env, 'task_id_mapping', None)
-        
-        self.success = np.zeros(self.num_envs, dtype=bool)
-        self.initial_state_ids = []
-        self.replay_images = {i: [] for i in range(self.num_envs)}
+
+        self._patch_auto_reset_logic()
         
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        self.success = np.zeros(self.num_envs, dtype=bool)
-        if info and 'current_state_ids' in info:
-            self.current_state_ids = info['current_state_ids']
-        
         return obs, info
     
     def step(self, actions, **kwargs):
-        step_count_tmp = self.step_count
-        
         obs, rewards, dones, truncated, info = self.env.step(actions, **kwargs)
         self.step_count += 1
-        
-        if np.any(dones):
-            done_indices = np.where(dones)[0]
-            
-            for i in done_indices:
-                success = rewards[i] > 0
-                self.success[i] = success
-                
-                if (self.current_state_ids[i] is not None and 
-                    self.task_id_mapping is not None and 
-                    i < len(self.task_id_mapping)):
-                    actual_task_id = self.task_id_mapping[i]
-                    state_id = self.current_state_ids[i]
-                    
-                    self._update_success_tracker(actual_task_id, state_id, success)
-        
         if self.step_count % self.recompute_freq == 0 and self.enable_logging:
             curriculum_stats = self.get_curriculum_stats()
             if 'curriculum_stats' not in info:
                 info['curriculum_stats'] = {}
             info['curriculum_stats'].update(curriculum_stats)
         
-        info['step_count_tmp'] = step_count_tmp
-        
         return obs, rewards, dones, truncated, info
     
-    def _update_success_tracker(self, task_id: int, state_id: int, success: bool):
-        """Update success history for a task-state pair."""
-        if task_id not in self.success_tracker:
-            self.success_tracker[task_id] = {}
-        if state_id not in self.success_tracker[task_id]:
-            self.success_tracker[task_id][state_id] = deque(maxlen=self.window_size)
-        
-        self.success_tracker[task_id][state_id].append(1.0 if success else 0.0)
-        
-        if self.enable_logging:
-            success_rate = self._get_success_rate(task_id, state_id)
-            print(f"[Curriculum] Task {task_id}, State {state_id}: Success rate = {success_rate:.2f}")
-    
+    def _patch_auto_reset_logic(self):
+        """Monkey patch the base environment's auto-reset logic to use curriculum."""
+        def curriculum_step(actions, **kwargs):
+            actions = normalize_gripper_action(actions, binarize=True)
+            if self.env.model_family == "openvla":
+                actions = invert_gripper_action(actions)
+            
+            obs_list, rewards, dones, infos = self.env.envs.step(actions)
+            self.env.step_counts += 1
+            
+            for i in range(self.env.num_envs):
+                if self.env.step_counts[i] >= self.env.max_steps:
+                    dones[i] = True
+            
+            if np.any(dones):
+                done_indices = np.where(dones)[0]
+                # Record success/fail results for completed episodes
+                for i in done_indices:
+                    task_id, state_id = self.env.current_task_state_pairs[i]
+                    success = rewards[i] > 0
+                    if (task_id, state_id) not in self.env.task_state_results:
+                        self.env.task_state_results[(task_id, state_id)] = []
+                    self.env.task_state_results[(task_id, state_id)].append(success)
+                
+                # Auto-reset with curriculum-based state selection
+                new_initial_states = []
+                dummy_actions = []
+                
+                for i in done_indices:
+                    task_id = self.env.task_ids[i % len(self.env.task_ids)]
+                    # Use curriculum to select state
+                    state_id = self._sample_state_with_curriculum(task_id, len(self.env.initial_states_list[i]))
+                    
+                    if self.enable_logging:
+                        success_rate = self._get_success_rate(task_id, state_id)
+                        # print(f"[Curriculum] Env {i}: Selected task {task_id}, state {state_id} "
+                        #         f"(success_rate: {success_rate:.2f}, target: {self.target_success_rate:.2f})")
+                    new_initial_states.append(self.env.initial_states_list[i][state_id])
+                    self.env.current_task_state_pairs[i] = (task_id, state_id)
+                    dummy_action = get_libero_dummy_action()
+                    dummy_actions.append(dummy_action)
+                
+                self.env.envs.reset(id=done_indices.tolist())
+                obs = self.env.envs.set_init_state(new_initial_states, id=done_indices.tolist())
+
+                for _ in range(10): # Stabilize the env
+                    obs, _, _, _ = self.env.envs.step(dummy_actions, id=done_indices.tolist())
+
+                for i, done_idx in enumerate(done_indices):
+                    obs_list[done_idx] = obs[i]
+            
+            # Continue with original processing
+            pixel_values = []
+            prompts = []
+            for i, obs in enumerate(obs_list):
+                
+                img = get_libero_image(obs, self.env.resize_size)
+                pixel_values.append(img)
+                prompts.append(self.env.task_descriptions[i])
+            
+            img_list, prompt_list = preprocess_input_batch(
+                pixel_values, prompts, 
+                pre_thought_list=None, center_crop=True
+            )
+            env_output = EnvOutput(pixel_values=img_list, prompts=prompt_list)
+            info = {
+                "task_descriptions": prompts,
+                "step_counts": self.env.step_counts.copy(),
+            }
+            truncated = np.array([False] * self.env.num_envs)
+
+            for i, done in enumerate(dones):
+                if done:
+                    self.env.step_counts[i] = 0
+            return env_output, np.array(rewards), np.array(dones), truncated, info
+        self.env.step = curriculum_step
+
     def _get_success_rate(self, task_id: int, state_id: int) -> float:
-        """Calculate success rate for a task-state pair."""
-        if (task_id not in self.success_tracker or 
-            state_id not in self.success_tracker[task_id]):
+        # if not hasattr(self.env, 'get_task_state_results'):
+        #     return 0.0
+        task_state_results = self.env.get_task_state_results()
+        if (task_id, state_id) not in task_state_results:
             return 0.0
-        
-        history = self.success_tracker[task_id][state_id]
-        if not history:
+        results = task_state_results[(task_id, state_id)]
+        if not results:
             return 0.0
-        
-        return sum(history) / len(history)
+        return sum(results) / len(results)
     
-    def sample_state_with_curriculum(self, task_id: int, n_states: int) -> int:
-        """Sample state using curriculum learning based on success rates."""
-        if task_id not in self.success_tracker:
-            return np.random.randint(0, n_states)
-        
+    def _sample_state_with_curriculum(self, task_id: int, n_states: int) -> int:
+        # if not hasattr(self.env, 'get_task_state_results'):
+        #     return np.random.randint(0, n_states)
         weights = []
         state_ids = list(range(n_states))
         
         for state_id in state_ids:
             success_rate = self._get_success_rate(task_id, state_id)
-            # Power law weighting: focus on harder states (lower success rates)
-            weight = ((1.0 - success_rate + 1e-9) ** (1.0 / self.temp))
+            distance_from_target = abs(success_rate - self.target_success_rate)
+            weight = 1.0 / (distance_from_target + 1e-9)
+            weight = weight ** (1.0 / self.temp)
             weights.append(weight)
-        
         total_weight = sum(weights)
         if total_weight == 0:
             return np.random.randint(0, n_states)
         
         probabilities = [w / total_weight for w in weights]
-        
-        # Ensure minimum sampling probability
+        # Ensure minimum sampling probability for exploration
         probabilities = [max(p, self.min_prob / n_states) for p in probabilities]
         probabilities = [p / sum(probabilities) for p in probabilities]
         
         return np.random.choice(state_ids, p=probabilities)
     
     def get_curriculum_stats(self) -> Dict[str, Any]:
-        """Get curriculum statistics for logging."""
+        # if not hasattr(self.env, 'get_task_state_results'):
+        #     return {}
+        task_state_results = self.env.get_task_state_results()
+        if not task_state_results:
+            return {}
+        task_groups = {}
+        for (task_id, state_id), results in task_state_results.items():
+            if task_id not in task_groups:
+                task_groups[task_id] = {}
+            task_groups[task_id][state_id] = results
+        
         stats = {
-            'total_tasks': len(self.success_tracker),
-            'total_states_tracked': sum(len(states) for states in self.success_tracker.values()),
+            'total_tasks': len(task_groups),
+            'total_states_tracked': len(task_state_results),
         }
-        for task_id, states in self.success_tracker.items():
+        for task_id, states in task_groups.items():
             state_success_rates = []
-            for _state_id, history in states.items():
-                if history:
-                    success_rate = sum(history) / len(history)
+            for state_id, results in states.items():
+                if results:
+                    success_rate = sum(results) / len(results)
                     state_success_rates.append(success_rate)
-            
+                    # distance = abs(success_rate - self.target_success_rate)
             if state_success_rates:
                 avg_success_rate = sum(state_success_rates) / len(state_success_rates)
                 stats[f'task_{task_id}_avg_success_rate'] = avg_success_rate
@@ -286,15 +333,5 @@ class CurriculumWrapper(gym.Wrapper):
         
         return stats
     
-    def reset_task_statistics(self, task_id: int = None):
-        """Reset statistics for a specific task or all tasks."""
-        if task_id is None:
-            self.success_tracker.clear()
-        elif task_id in self.success_tracker:
-            del self.success_tracker[task_id]
-    
     def close(self):
-        if self.enable_logging:
-            final_stats = self.get_curriculum_stats()
-            print(f"[Curriculum] Final statistics: {final_stats}")
         self.env.close()

@@ -215,8 +215,6 @@ class Args:
     """Temperature parameter for curriculum sampling (higher = more uniform)"""
     curriculum_min_prob: float = 0.0
     """Minimum probability for sampling any task/state"""
-    success_history_window: int = 5
-    """Number of recent episodes to use for computing success rate"""
     # curriculum_recompute_freq: int = 10
     # """How often to recompute and log curriculum statistics (in episodes)"""
 
@@ -506,7 +504,6 @@ def get_environment(args: Args, mode: str = "train"):
             env,
             temp=args.curriculum_temp,
             min_prob=args.curriculum_min_prob,
-            window_size=args.success_history_window,
         )
     # env = RecordEpisodeStatistics(env)
     return env
@@ -839,11 +836,8 @@ class PolicyTrainerRayProcess(RayProcess):
         if args.use_value_model:
             self.value_model.eval()
 
-        completed_episodes = 0
-        total_successes = 0
         episodic_lengths = []
         episodic_returns = []
-        
         total_expected_episodes = sum(len(eval_envs.initial_states_list[i]) for i in range(eval_envs.num_envs))
         pbar = tqdm.tqdm(
             total=total_expected_episodes,
@@ -853,8 +847,8 @@ class PolicyTrainerRayProcess(RayProcess):
         )
 
         obs, infos = eval_envs.reset()
-        step = 0
 
+        step = 0
         while True:
             padding_side = "right"
             num_channels = 3
@@ -893,40 +887,33 @@ class PolicyTrainerRayProcess(RayProcess):
             next_obs, rewards, dones, _, infos = eval_envs.step(actions)
 
             if np.any(dones):
-                new_episodes = np.sum(dones)
-                new_successes = sum([r > 0 for r, d in zip(rewards, dones) if d])
-                completed_episodes += new_episodes
-                total_successes += new_successes
                 for i, (r, d) in enumerate(zip(rewards, dones)):
                     if d:
                         episodic_returns.append(r)
                         episodic_lengths.append(infos["step_counts"][i])
-                current_success_rate = total_successes / completed_episodes if completed_episodes > 0 else 0.0
-                pbar.update(new_episodes)
+                current_success_rate, current_episodes = eval_envs.get_completed_status()
+                pbar.n = current_episodes
+                pbar.refresh()
                 pbar.set_postfix({
                     'Success Rate': f'{current_success_rate:.3f}',
                 })
-                if self._rank == 0:  # Only log on rank 0
-                    cprint(f"[Eval] Completed {completed_episodes}/{total_expected_episodes} episodes, "
-                              f"Success Rate: {current_success_rate:.3f} ({total_successes}/{completed_episodes})",
-                              "cyan")
             step += 1
-            if eval_envs.is_evaluation_complete():
-                break
             obs = next_obs
+            if eval_envs.is_eval_complete():
+                break
 
         pbar.close()
-        final_success_rate = eval_envs.compute_success_rate()
+        final_success_rate, final_episodes = eval_envs.get_completed_status()
         avg_episodic_length = np.mean(episodic_lengths) if episodic_lengths else 0.0
         avg_episodic_return = np.mean(episodic_returns) if episodic_returns else 0.0
         eval_stats = {
             'success_rate': final_success_rate,
-            'num_episodes': completed_episodes,
+            'num_episodes': final_episodes,
             'episodic_length': avg_episodic_length,
             'episodic_return': avg_episodic_return,
         }
         logger.info(f"[Eval] Completed parallel evaluation: "
-                    f"Episodes: {completed_episodes}, "
+                    f"Episodes: {final_episodes}, "
                     f"Success rate: {final_success_rate:.3f}, "
                     f"Avg episode length: {avg_episodic_length:.1f}")
         self.model.train()

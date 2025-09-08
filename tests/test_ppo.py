@@ -61,7 +61,7 @@ def test_ppo_single_gpu():
         "--norm_adv", "False",
         "--use_curriculum", "True",
         "--curriculum_temp", "1.0",
-        "--success_history_window", "20",
+        # "--success_history_window", "20",
         "--save_freq", "1",  # Save more frequently for testing
         "--init_eval", "True",
         "--eval_freq", "1",  # Evaluate more frequently for testing
@@ -135,7 +135,7 @@ def test_ppo_multi_gpu():
         "--norm_adv", "False",
         "--use_curriculum", "True",
         "--curriculum_temp", "1.0",
-        "--success_history_window", "20",
+        # "--success_history_window", "20",
         "--save_freq", "1",  # Save more frequently for testing
         "--init_eval", "True",
         "--eval_freq", "1",  # Evaluate more frequently for testing

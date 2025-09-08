@@ -131,7 +131,7 @@ class LiberoVecEnv(gym.Env):
         dummy_action = get_libero_dummy_action()
         dummy_actions = [dummy_action] * self.num_envs
         
-        for _ in range(10):
+        for _ in range(10): # Stablize the env
             obs_list, _, _, _ = self.envs.step(dummy_actions)
         
         pixel_values = []
@@ -167,10 +167,8 @@ class LiberoVecEnv(gym.Env):
             if self.step_counts[i] >= self.max_steps:
                 dones[i] = True
         
-        # Auto-reset environments that are done
         if np.any(dones):
             done_indices = np.where(dones)[0]
-            
             # Record success/fail results for completed episodes
             for i in done_indices:
                 task_id, state_id = self.current_task_state_pairs[i]
@@ -179,6 +177,7 @@ class LiberoVecEnv(gym.Env):
                     self.task_state_results[(task_id, state_id)] = []
                 self.task_state_results[(task_id, state_id)].append(success)
             
+            # Auto-reset environments that are done
             new_initial_states = []
             dummy_actions = []
             for i in done_indices:
@@ -186,7 +185,6 @@ class LiberoVecEnv(gym.Env):
                 if self.rand_init_state:
                     state_id = np.random.randint(0, len(self.initial_states_list[i]))
                 else:
-                    # For evaluation, cycle through all states sequentially
                     state_id = self.current_state_indices[i] % len(self.initial_states_list[i])
                     self.current_state_indices[i] += 1
                 new_initial_states.append(self.initial_states_list[i][state_id])
@@ -196,7 +194,7 @@ class LiberoVecEnv(gym.Env):
             self.envs.reset(id=done_indices.tolist())
             obs = self.envs.set_init_state(new_initial_states, id=done_indices.tolist())
 
-            for _ in range(10):
+            for _ in range(10): # Stablize the env
                 obs, _, _, _ = self.envs.step(dummy_actions, id=done_indices.tolist())
 
             for i, done_idx in enumerate(done_indices):
@@ -224,7 +222,7 @@ class LiberoVecEnv(gym.Env):
                 self.step_counts[i] = 0
         return env_output, np.array(rewards), np.array(dones), truncated, info
 
-    def is_evaluation_complete(self):
+    def is_eval_complete(self) -> bool:
         """Check if all task+initial state pairs have been tested at least once."""
         all_pairs = set()
         for i in range(self.num_envs):
@@ -234,14 +232,21 @@ class LiberoVecEnv(gym.Env):
         tested_pairs = set(self.task_state_results.keys())
         return all_pairs.issubset(tested_pairs)
     
-    def compute_success_rate(self):
-        """Compute success rate from stored results (only first record of each pair)."""
+    def get_task_state_results(self) -> Dict[Tuple[int, int], List[bool]]:
+        return self.task_state_results.copy()
+
+    def get_completed_status(self) -> Tuple[float, int]:
+        """
+        Returns:
+            success_rate: float
+            completed_episodes: int
+        """
         if not self.task_state_results:
-            return 0.0
+            return 0.0, 0
         total_pairs = len(self.task_state_results)
         successful_pairs = sum(1 for results in self.task_state_results.values() if results[0])
         success_rate = successful_pairs / total_pairs if total_pairs > 0 else 0.0
-        return success_rate
+        return success_rate, total_pairs
 
     def close(self):
         self.envs.close()
