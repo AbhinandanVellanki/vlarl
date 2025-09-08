@@ -61,8 +61,25 @@ Ref: https://github.com/vllm-project/vllm/issues/4392
 pip install nvidia-cublas-cu12==12.4.5.8
 ```
 
-- No network case
-```bash
-cd <pretrained_checkpoint>
-# Remove "auto_map" in preprocessor_config.json and tokenizer_config.json
+- Bad network case
+Revise config.json:
+```json
+"auto_map": {
+"AutoConfig": "configuration_prismatic.OpenVLAConfig",
+"AutoModelForVision2Seq": "modeling_prismatic.OpenVLAForActionPrediction"
+},
 ```
+preprocessor_config.json:
+```json
+"auto_map": {
+"AutoImageProcessor": "processing_prismatic.PrismaticImageProcessor",
+"AutoProcessor": "processing_prismatic.PrismaticProcessor"
+},
+```
+and tokenizer_config.json:
+```json
+"auto_map": {
+"AutoProcessor": "processing_prismatic.PrismaticProcessor"
+},
+```
+Then copy configuration_prismatic.py, processing_prismatic.py and modeling_prismatic.py to the checkpoint folder.

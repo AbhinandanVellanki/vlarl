@@ -17,7 +17,7 @@ class VideoWrapper(gym.Wrapper):
         save_dir: str = "video", 
         save_freq: int = 1,
         save_stats: bool = True,
-        max_videos_per_env: int = 10,
+        max_videos_per_env: int = 10000,
         add_info_overlay: bool = True,
         env_gpu_id: int = 0
     ):
@@ -68,10 +68,10 @@ class VideoWrapper(gym.Wrapper):
         obs, rewards, dones, truncated, info = self.env.step(actions, **kwargs)
         
         pixel_values = obs["pixel_values"]
-        for i in range(min(len(pixel_values), self.num_envs)):
+        # for i in range(min(len(pixel_values), self.num_envs)):
+        for i in range(self.num_envs):
             if self.video_counts[i] < self.max_videos_per_env and len(self.frames[i]) < 1000:
                 img = pixel_values[i]
-                
                 if self.add_info_overlay:
                     img_args = {
                         "goal": self.task_descriptions[i],
@@ -98,6 +98,8 @@ class VideoWrapper(gym.Wrapper):
                     self._save_video(i, rewards[i])
                     self.video_counts[i] += 1
                     self.total_episodes += 1
+                else:
+                    cprint(f"[VideoWrapper] Skipping video save for env {i}", "yellow")
                 self.episode_counts[i] += 1
                 self.frames[i] = []
         

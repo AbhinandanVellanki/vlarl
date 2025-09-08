@@ -101,10 +101,6 @@ from utils.fsdp_utils import (
 )
 # OpenVLA-specific imports
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig, VISION_BACKBONE_TO_TIMM_ID
-# from prismatic.models.backbones.llm.prompting import PurePromptBuilder, VicunaV15ChatPromptBuilder
-# from prismatic.vla.action_tokenizer import ActionTokenizer
-# from prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset
-# from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
 from experiments.robot.openvla_utils import get_processor, register_custom_classes
 from experiments.robot.robot_utils import (
     disable_dropout_in_model,
@@ -215,8 +211,6 @@ class Args:
     """Temperature parameter for curriculum sampling (higher = more uniform)"""
     curriculum_min_prob: float = 0.0
     """Minimum probability for sampling any task/state"""
-    # curriculum_recompute_freq: int = 10
-    # """How often to recompute and log curriculum statistics (in episodes)"""
 
     # for debugging
     verbose: bool = False
@@ -277,8 +271,6 @@ class Args:
     """The maximum gradient norm for the policy"""
     value_max_grad_norm: float = 1.0
     """The maximum gradient norm for the value"""
-    max_approx_kl: float = 1e8
-    """The maximum KL divergence"""
 
     # various batch sizes
     gradient_accumulation_steps: Optional[int] = None
@@ -401,14 +393,14 @@ class Args:
     """Extra note for logging, Weights & Biases"""
     push_to_hub: bool = True
     """Whether to upload the saved model to huggingface"""
-    hf_entity: Optional[str] = None
-    """The user or org name of the model repository from the Hugging Face Hub"""
-    hf_repo_id: Optional[str] = None
-    """The id of the saved model in the Hugging Face Hub (can be autoset if not given)"""
-    hf_repo_revision: Optional[str] = None
-    """The revision of the saved model in the Hugging Face Hub (can be autoset if not given)"""
-    hf_repo_url: Optional[str] = None
-    """The url of the saved model in the Hugging Face Hub (will be autoset)"""
+    # hf_entity: Optional[str] = None
+    # """The user or org name of the model repository from the Hugging Face Hub"""
+    # hf_repo_id: Optional[str] = None
+    # """The id of the saved model in the Hugging Face Hub (can be autoset if not given)"""
+    # hf_repo_revision: Optional[str] = None
+    # """The revision of the saved model in the Hugging Face Hub (can be autoset if not given)"""
+    # hf_repo_url: Optional[str] = None
+    # """The url of the saved model in the Hugging Face Hub (will be autoset)"""
 
 
 def get_num_patches(image_size: int, patch_size: int) -> int:
@@ -445,7 +437,6 @@ def calculate_runtime_args(args: Args,):
     if args.task_ids is None:
         assert args.local_rollout_batch_size == 10, \
             f"`local_rollout_batch_size` must be the same as task nums (10), got {args.local_rollout_batch_size}"
-        # args.task_ids = list(range(args.local_rollout_batch_size)) * args.world_size
         args.task_ids = [0 for _ in range(args.local_rollout_batch_size * args.world_size)]
 
     args.task_ids = args.task_ids * args.world_size
@@ -483,7 +474,6 @@ def calculate_runtime_args(args: Args,):
 def get_environment(args: Args, mode: str = "train"):
     env = LiberoVecEnv(
         task_suite_name=args.task_suite_name,
-        # num_tasks_per_suite=cfg.num_tasks_per_suite,
         task_ids=args.task_ids,
         num_trials_per_task=args.num_trials_per_task,
         resize_size=(224, 224),
@@ -1083,7 +1073,6 @@ class PolicyTrainerRayProcess(RayProcess):
             seed=args.seed,
             logprobs=1,
         )
-        # logger.info("setup async queues")
         response_ids_Q_train = Queue(maxsize=1)
         prompt_ids_Q_train = Queue(maxsize=1)
         response_ids_Q_eval = Queue(maxsize=1)
@@ -1167,10 +1156,8 @@ class PolicyTrainerRayProcess(RayProcess):
         # local_obs['pixel_values']: List[Image.Image]
         # ------------------------------------------------------------
 
-        # Gather observations from all GPUs
-        world_size = dist.get_world_size()
-
         # LOGIC: get local tensor obs for gather, gather to all GPUs, then concat to global tensor obs to call vllm engines
+        world_size = dist.get_world_size()
         local_token_obs = {
             "input_ids": torch.ones(
                 args.local_rollout_batch_size, args.context_length - 1, device=device, dtype=torch.float32
@@ -1196,12 +1183,10 @@ class PolicyTrainerRayProcess(RayProcess):
         dist.all_gather(gathered_input_ids, local_token_obs["input_ids"])
         dist.all_gather(gathered_pixel_values, original_pixel_values_tensor)
         dist.barrier()
-        # Create global observation by concatenating all gathered data
         global_token_obs = {
             "input_ids": torch.cat(gathered_input_ids, dim=0).to(dtype=torch.long).cpu().numpy(),
             "pixel_values": torch.cat(gathered_pixel_values, dim=0).cpu().numpy(),
         }
-        # allocate the obs to rank0 to call vllm engines
         if accelerator.is_main_process:
             prompt_ids_Q_train.put(global_token_obs)
 
@@ -1295,8 +1280,6 @@ class PolicyTrainerRayProcess(RayProcess):
 
         resume_training_step = 1
         global_step = 0
-        # episodic_returns = Queue(maxsize=args.local_rollout_batch_size)
-        # episodic_lengths = Queue(maxsize=args.local_rollout_batch_size)
 
         # initial eval
         if args.init_eval and accelerator.is_main_process:
@@ -1322,7 +1305,7 @@ class PolicyTrainerRayProcess(RayProcess):
             episode += args.rollout_batch_size  # rollout batch size is the number of parallel environments
 
             if training_step != 1:
-                # sync the policy model after each num_steps
+                # Sync the policy model after each num_steps
                 start_time = time.time()
                 if not args.debug:
                     with timer.timer("broadcast"):
@@ -1331,8 +1314,7 @@ class PolicyTrainerRayProcess(RayProcess):
                     logger.info(
                         f"🔥🔥🔥 Syncing weights using shared memory; Time to sync weights: {time.time() - start_time:.2f} seconds"
                     )
-                # eval
-                # if (args.eval_freq > 0 and training_step % args.eval_freq == 0):
+                # Eval the current model
                 if (args.eval_freq > 0 and training_step % args.eval_freq == 0):
                     if accelerator.is_main_process:
                         logger.info(f"[Eval] Running evaluation at training step {training_step}")
@@ -1423,7 +1405,7 @@ class PolicyTrainerRayProcess(RayProcess):
 
                         # logger.info(f"{value=}")
 
-                        # TODO: Argh... this is redundant with vllm logprobs. Try to remove it.
+                        # NOTE: this is necessary as vLLM's logprobs are not always correct
                         start_time = time.time()
                         with timer.timer("forward"):
                             logprob, logits = forward(
@@ -1434,7 +1416,7 @@ class PolicyTrainerRayProcess(RayProcess):
                         # logger.info(f"Forward time: {time.time() - start_time} seconds")
                         # breakpoint()
 
-                        # Compute a score using the reward model
+                        # Compute a score using the process reward model
                         # score = torch.zeros(query.shape[0], device=device)
                         # if args.process_reward_model:
                         #     processed_score = get_reward(self.reward_model, query_response, args.pad_token_id, context_length)
@@ -1503,8 +1485,6 @@ class PolicyTrainerRayProcess(RayProcess):
                     if local_dones[i]:
                         episodic_returns.append(1.0 if local_rewards[i].item() > 0 else 0.0)
                         episodic_lengths.append(local_infos["step_counts"][i])
-                        # episodic_returns.put(1.0 if local_rewards[i].item() > 0 else 0.0)
-                        # episodic_lengths.put(local_infos["step_counts"][i])
 
                 local_token_obs["input_ids"] = local_token_obs["input_ids"].to(dtype=torch.long)
                 queries_next = local_token_obs["input_ids"]
@@ -1700,7 +1680,6 @@ class PolicyTrainerRayProcess(RayProcess):
 
                             gradient_accumulation_idx += 1
                         minibatch_idx += 1
-                        # fmt: off
                         del mb_advantage, mb_responses, mb_query_responses, mb_return, mb_values
                         if training_step > args.value_init_steps:
                             del new_logprobs, logprobs_diff, ratio, pg_losses, pg_losses2, pg_loss
@@ -1708,7 +1687,6 @@ class PolicyTrainerRayProcess(RayProcess):
                             del vpred, vf_losses1
                             if args.clip_vloss:
                                 del vpredclipped, vf_losses2, vf_loss_max
-                        # fmt: on
                         # del everything and empty cache
                         torch.cuda.empty_cache()
                     del b_inds, mini_batch_inds
@@ -1744,7 +1722,6 @@ class PolicyTrainerRayProcess(RayProcess):
             metric_values /= dist.get_world_size()
             dist.all_reduce(metric_values, op=dist.ReduceOp.SUM)
             global_metrics = {k: v.item() for k, v in zip(metric_keys, metric_values)}
-                
             global_metrics.update(
                 {
                     "objective/episodic_return": sum(episodic_returns)/len(episodic_returns) if len(episodic_returns) > 0 else 0,
@@ -1758,7 +1735,6 @@ class PolicyTrainerRayProcess(RayProcess):
                 **global_metrics,  # Unpack all the reduced metrics
                 **timer.get_log(),  # Unpack all the timing logs
             }
-
             if accelerator.is_main_process:
                 print_rich_single_line_metrics(metrics)
                 metrics_queue.put((metrics, global_step))
@@ -1767,7 +1743,7 @@ class PolicyTrainerRayProcess(RayProcess):
             torch.cuda.empty_cache()
             log_gpu_memory_usage("[Training] After training", rank=accelerator.process_index, logger=logger, level=logging.INFO)
 
-            # save steps
+            # Save model checkpoint
             if args.save_freq > 0 and training_step % args.save_freq == 0:
                 checkpoint_dir = args.exp_dir
                 os.makedirs(checkpoint_dir, exist_ok=True)
@@ -1784,7 +1760,6 @@ class PolicyTrainerRayProcess(RayProcess):
         if self._rank == 0:
             os.makedirs(output_dir, exist_ok=True)
         dist.barrier()
-
         with FSDP.summon_full_params(model_to_save):
             if self._rank == 0:
                 if is_peft_model(model_to_save):
@@ -1792,8 +1767,6 @@ class PolicyTrainerRayProcess(RayProcess):
                 else:
                     model_state_dict = model_to_save.state_dict()
                     torch.save(model_state_dict, os.path.join(output_dir, 'model.pt'))
-
-                # Save sharded model state
                 logger.info(f'Saving model to {os.path.abspath(output_dir)}')
             dist.barrier()
 
@@ -1806,7 +1779,6 @@ class PolicyTrainerRayProcess(RayProcess):
                     model_to_save._fsdp_wrapped_module.config.save_pretrained(hf_path)
                 else:
                     model_to_save.config.save_pretrained(hf_path)
-
             # Save the processor
             processor.save_pretrained(output_dir)
 
@@ -1827,7 +1799,6 @@ def kill_ray_cluster_if_a_worker_dies(object_refs: List[Any], stop_event: thread
                 time.sleep(120)
                 ray.shutdown()
                 os._exit(1)  # Force shutdown the process
-
         time.sleep(30)
 
 
@@ -1885,7 +1856,7 @@ def main(args: Args):
 
     calculate_runtime_args(args)
 
-    # Start =>> Build Directories
+    # Build Directories
     run_dir, adapter_dir = args.run_root_dir / args.exp_id, args.adapter_tmp_dir / args.exp_id
     os.makedirs(run_dir, exist_ok=True)
 
@@ -1945,7 +1916,7 @@ def main(args: Args):
     metrics_queue = RayQueue()
     ray.get(inits)
 
-    # [VLLM] Initialize VLLM engines
+    # [vLLM] Initialize vLLM engines
     max_image_tokens = ray.get(policy_group.models[0].get_max_image_tokens.remote())
     max_len = max_image_tokens + args.context_length + args.response_length
     vllm_engines = create_vllm_engines(
@@ -1960,11 +1931,14 @@ def main(args: Args):
         max_model_len=max_len,
         gpu_memory_utilization=args.gpu_memory_utilization,
     )
-    # vllm_engines = None
 
     logger.info("======== all models initialized =========")
 
     # Save dataset statistics for inference
+    # from prismatic.models.backbones.llm.prompting import PurePromptBuilder, VicunaV15ChatPromptBuilder
+    # from prismatic.vla.action_tokenizer import ActionTokenizer
+    # from prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset
+    # from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
     # action_tokenizer = ActionTokenizer(processor.tokenizer)
     # batch_transform = RLDSBatchTransform(
     #     action_tokenizer,
@@ -2010,8 +1984,6 @@ def main(args: Args):
             wandb.log(metrics, step=global_step)
 
     ray.get(refs)
-
-    # save model
     ray.shutdown()
     stop_event.set()
 

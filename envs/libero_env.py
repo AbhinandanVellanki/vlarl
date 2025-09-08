@@ -245,12 +245,11 @@ class LiberoVecEnv(gym.Env):
             f"task_{task_id}": sum(1 for (t_id, _), results in self.task_state_results.items()
                                                 if t_id == task_id and results[0]) /
             sum(1 for (t_id, _ ) in self.task_state_results.keys() if t_id == task_id)
-            for task_id in set(self.task_ids)
+            for task_id in set(self.task_ids) if task_id in [pair[0] for pair in self.task_state_results.keys()]
         }
         infos = {
             "success_rate": success_rate,
             "completed_episodes": total_pairs,
-            # per-task success rate
             **per_task_success_rates,
         }
         return infos
