@@ -37,12 +37,12 @@ DATA_NAME=libero_${POSTFIX}
 DATA_ROOT=${DATA_NAME}_no_noops
 
 # Total H20 GPUs (lora)
-per_device_train_batch_size=16
-local_rollout_batch_size=10
+# per_device_train_batch_size=16
+# local_rollout_batch_size=10
 
 # Total H20 GPUs (full)
-# per_device_train_batch_size=4
-# local_rollout_batch_size=10
+per_device_train_batch_size=8
+local_rollout_batch_size=10
 
 # Total 2 A100 GPUs
 # per_device_train_batch_size=16
@@ -92,19 +92,19 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --temperature 1.7 \
     --num_epochs 1 \
     --value_init_steps 3 \
-    --learning_rate 2e-5 \
-    --value_learning_rate 2e-4 \
+    --learning_rate 3e-6 \
+    --value_learning_rate 3e-5 \
     --policy_max_grad_norm 1.0 \
     --value_max_grad_norm 1.0 \
     --cliprange_high 0.4 \
     --cliprange_low 0.2 \
     --gamma 1.0 \
-    --num_steps 256 \
+    --num_steps 128 \
     --total_episodes 100000 \
     --vllm_tensor_parallel_size 1 \
     --vllm_enforce_eager True \
     --enable_prefix_caching False \
-    --gpu_memory_utilization 0.95 \
+    --gpu_memory_utilization 0.9 \
     --use_lora True \
     --enable_gradient_checkpointing False \
     --sharding_strategy "shard-grad-op" \
@@ -116,6 +116,7 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --norm_adv False \
     --use_curriculum True \
     --curriculum_temp 1.0 \
+    --curriculum_min_prob 0.0 \
     --save_freq 10 \
     --eval_freq 10 \
     --init_eval True \

@@ -53,8 +53,10 @@ class LiberoVecEnv(gym.Env):
         self.tasks = []
         self.initial_states_list = []
         self.task_descriptions = []
-        self.max_steps = max_episode_length if max_episode_length is not None else self._get_max_step(self.task_suite_name)
-        
+        if max_episode_length is not None:
+            self.max_steps = max_episode_length
+        else:
+            self.max_steps = self._get_max_step(self.task_suite_name)
         self.action_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(7,), dtype=np.float32
         )

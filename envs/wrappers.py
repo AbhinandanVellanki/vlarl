@@ -18,8 +18,7 @@ class VideoWrapper(gym.Wrapper):
         save_freq: int = 1,
         save_stats: bool = True,
         max_videos_per_env: int = 10000,
-        add_info_overlay: bool = True,
-        env_gpu_id: int = 0
+        env_gpu_id: int = 0,
     ):
         super().__init__(env)
         self.env = env
@@ -27,7 +26,6 @@ class VideoWrapper(gym.Wrapper):
         self.save_freq = save_freq
         self.save_stats = save_stats
         self.max_videos_per_env = max_videos_per_env
-        self.add_info_overlay = add_info_overlay
         self.env_gpu_id = env_gpu_id
         
         self.num_envs = env.num_envs
@@ -49,7 +47,7 @@ class VideoWrapper(gym.Wrapper):
         for i in range(self.num_envs):
             if self.video_counts[i] < self.max_videos_per_env:
                 img = pixel_values[i]
-                if self.add_info_overlay and self.task_descriptions:
+                if self.task_descriptions:
                     img_args = {
                         "goal": self.task_descriptions[i],
                         "step": self.env.step_counts[i],
@@ -67,25 +65,26 @@ class VideoWrapper(gym.Wrapper):
         
         obs, rewards, dones, truncated, info = self.env.step(actions, **kwargs)
         
+        print(f"[VideoWrapper] {dones=}")
+
         pixel_values = obs["pixel_values"]
         # for i in range(min(len(pixel_values), self.num_envs)):
         for i in range(self.num_envs):
             if self.video_counts[i] < self.max_videos_per_env and len(self.frames[i]) < 1000:
                 img = pixel_values[i]
-                if self.add_info_overlay:
+                if self.save_stats:
                     img_args = {
                         "goal": self.task_descriptions[i],
                         "step": self.env.step_counts[i],
                         "action": actions[i],
                     }
-                    if self.save_stats:
-                        if values is not None:
-                            img_args["value"] = values[i]
-                        if log_probs is not None:
-                            img_args["prob"] = np.exp(log_probs[i])
-                            img_args["entropy"] = (-log_probs[i]).mean()
-                        if prm_rewards is not None:
-                            img_args["prm_rewards"] = prm_rewards[i]
+                    if values is not None:
+                        img_args["value"] = values[i]
+                    if log_probs is not None:
+                        img_args["prob"] = np.exp(log_probs[i])
+                        img_args["entropy"] = (-log_probs[i]).mean()
+                    if prm_rewards is not None:
+                        img_args["prm_rewards"] = prm_rewards[i]
                     
                     img = add_info_board(img, **img_args)
                 self.frames[i].append(img)
@@ -107,8 +106,6 @@ class VideoWrapper(gym.Wrapper):
     
     def _save_video(self, env_idx: int, reward=None):
         """Save video for a specific environment."""
-        if not self.frames[env_idx]:
-            return
         success = False
         if reward is not None:
             success = reward > 0
@@ -135,6 +132,8 @@ class VideoWrapper(gym.Wrapper):
         for i in range(self.num_envs):
             if self.frames[i]:
                 self._save_video(i)
+            else:
+                cprint(f"[VideoWrapper] No frames to save for env {i} on close.", "yellow")
         self.env.close()
 
 from experiments.robot.robot_utils import normalize_gripper_action, invert_gripper_action
@@ -152,7 +151,7 @@ class CurriculumWrapper(gym.Wrapper):
         self, 
         env, 
         temp: float = 1.0, 
-        min_prob: float = 0.1, 
+        min_prob: float = 0.0, 
         recompute_freq: int = 10,
         enable_logging: bool = True,
         exp_dir: str = "./"
@@ -199,7 +198,6 @@ class CurriculumWrapper(gym.Wrapper):
             for i in range(self.env.num_envs):
                 if self.env.step_counts[i] >= self.env.max_steps:
                     dones[i] = True
-            
             if np.any(dones):
                 done_indices = np.where(dones)[0]
                 # Record success/fail results for completed episodes
@@ -216,13 +214,9 @@ class CurriculumWrapper(gym.Wrapper):
                 
                 for i in done_indices:
                     task_id = self.env.task_ids[i % len(self.env.task_ids)]
-                    # Use curriculum to select state
+
                     state_id = self._sample_state_with_curriculum(task_id, len(self.env.initial_states_list[i]))
                     
-                    if self.enable_logging:
-                        success_rate = self._get_success_rate(task_id, state_id)
-                        # print(f"[Curriculum] Env {i}: Selected task {task_id}, state {state_id} "
-                        #         f"(success_rate: {success_rate:.2f}, target: {self.target_success_rate:.2f})")
                     new_initial_states.append(self.env.initial_states_list[i][state_id])
                     self.env.current_task_state_pairs[i] = (task_id, state_id)
                     dummy_action = get_libero_dummy_action()
@@ -310,8 +304,8 @@ class CurriculumWrapper(gym.Wrapper):
             task_groups[task_id][state_id] = results
         
         stats = {
-            'total_tasks': len(task_groups),
-            'total_states_tracked': len(task_state_results),
+            'total_visited_tasks': len(task_groups),
+            'total_visited_states': len(task_state_results),
         }
         for task_id, states in task_groups.items():
             state_success_rates = []
@@ -323,10 +317,7 @@ class CurriculumWrapper(gym.Wrapper):
             if state_success_rates:
                 avg_success_rate = sum(state_success_rates) / len(state_success_rates)
                 stats[f'task_{task_id}_avg_success_rate'] = avg_success_rate
-                stats[f'task_{task_id}_states'] = len(state_success_rates)
-                stats[f'task_{task_id}_min_success_rate'] = min(state_success_rates)
-                stats[f'task_{task_id}_max_success_rate'] = max(state_success_rates)
-        
+                stats[f'task_{task_id}_visited_states'] = len(state_success_rates)
         return stats
     
     def close(self):

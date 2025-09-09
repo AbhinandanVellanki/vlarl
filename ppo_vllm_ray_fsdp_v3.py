@@ -475,26 +475,26 @@ def get_environment(args: Args, mode: str = "train"):
     env = LiberoVecEnv(
         task_suite_name=args.task_suite_name,
         task_ids=args.task_ids,
-        num_trials_per_task=args.num_trials_per_task,
+        num_trials_per_task=args.num_trials_per_task if mode=="train" else 1,
         resize_size=(224, 224),
         max_episode_length=args.max_env_length,
         num_envs=args.n_rollout_threads,
         seed=args.seed,
         rand_init_state=True if mode=="train" else False,
     )
-    if args.save_video:
-        save_dir = os.path.join(args.exp_dir, "rollouts")
-        if os.path.exists(save_dir):
-            shutil.rmtree(save_dir)
-            cprint(f"[VideoWrapper] Removed existing directory {save_dir}", "red")
-        os.makedirs(save_dir, exist_ok=True)
-        env = VideoWrapper(env, save_dir=save_dir)
     if mode == "train" and args.use_curriculum:
         env = CurriculumWrapper(
             env,
             temp=args.curriculum_temp,
             min_prob=args.curriculum_min_prob,
         )
+    if mode == "train" and args.save_video:
+        save_dir = os.path.join(args.exp_dir, "rollouts")
+        if os.path.exists(save_dir):
+            shutil.rmtree(save_dir)
+            cprint(f"[VideoWrapper] Removed existing directory {save_dir}", "red")
+        os.makedirs(save_dir, exist_ok=True)
+        env = VideoWrapper(env, save_dir=save_dir, env_gpu_id=args.env_gpu_id)
     # env = RecordEpisodeStatistics(env)
     return env
 
@@ -663,24 +663,24 @@ class PolicyTrainerRayProcess(RayProcess):
         # cpu_offload = CPUOffload(offload_params=True) if args.offload else None
         cpu_offload = None  # NOTE:  We force turn off CPUOffload for critic because it causes incorrect results when using grad accumulation
 
-        # fsdp_precision_policy = MixedPrecision(
-        #     param_dtype=torch.bfloat16, reduce_dtype=torch.float32, buffer_dtype=torch.float32
-        # )
-        # self.model = FSDP(
-        #     model,
-        #     cpu_offload=cpu_offload,
-        #     param_init_fn=init_fn,
-        #     use_orig_params=False,
-        #     auto_wrap_policy=auto_wrap_policy,
-        #     device_id=torch.cuda.current_device(),
-        #     sharding_strategy=fsdp_sharding_strategy,
-        #     mixed_precision=fsdp_precision_policy,
-        #     sync_module_states=True,
-        #     device_mesh=self.device_mesh,
-        #     forward_prefetch=False,
-        # )
-        # del model
-        self.model = model.to(torch.cuda.current_device())    # w/o FSDP
+        fsdp_precision_policy = MixedPrecision(
+            param_dtype=torch.bfloat16, reduce_dtype=torch.float32, buffer_dtype=torch.float32
+        )
+        self.model = FSDP(
+            model,
+            cpu_offload=cpu_offload,
+            param_init_fn=init_fn,
+            use_orig_params=False,
+            auto_wrap_policy=auto_wrap_policy,
+            device_id=torch.cuda.current_device(),
+            sharding_strategy=fsdp_sharding_strategy,
+            mixed_precision=fsdp_precision_policy,
+            sync_module_states=True,
+            device_mesh=self.device_mesh,
+            forward_prefetch=False,
+        )
+        del model
+        # self.model = model.to(torch.cuda.current_device())    # w/o FSDP
         logger.info("[Actor] Initialized FSDP model")
         log_gpu_memory_usage("[Actor] After model init", rank=self._rank, logger=logger, level=logging.INFO)
         self.policy_optimizer = torch.optim.AdamW(
@@ -761,24 +761,24 @@ class PolicyTrainerRayProcess(RayProcess):
                 value_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
 
             logger.info(f'[Critic] wrap_policy: {auto_wrap_policy}')
-            # fsdp_precision_policy = MixedPrecision(
-            #     param_dtype=torch.float32, reduce_dtype=torch.float32, buffer_dtype=torch.float32
-            # )
-            # self.value_model = FSDP(
-            #     value_model,
-            #     cpu_offload=cpu_offload,
-            #     param_init_fn=init_fn,
-            #     use_orig_params=False,
-            #     device_id=torch.cuda.current_device(),
-            #     auto_wrap_policy=auto_wrap_policy,
-            #     sharding_strategy=fsdp_sharding_strategy,
-            #     mixed_precision=fsdp_precision_policy,
-            #     sync_module_states=True,
-            #     device_mesh=self.device_mesh,
-            #     forward_prefetch=False,
-            # )
-            # del value_model
-            self.value_model = value_model.to(torch.cuda.current_device())  # w/o FSDP
+            fsdp_precision_policy = MixedPrecision(
+                param_dtype=torch.float32, reduce_dtype=torch.float32, buffer_dtype=torch.float32
+            )
+            self.value_model = FSDP(
+                value_model,
+                cpu_offload=cpu_offload,
+                param_init_fn=init_fn,
+                use_orig_params=False,
+                device_id=torch.cuda.current_device(),
+                auto_wrap_policy=auto_wrap_policy,
+                sharding_strategy=fsdp_sharding_strategy,
+                mixed_precision=fsdp_precision_policy,
+                sync_module_states=True,
+                device_mesh=self.device_mesh,
+                forward_prefetch=False,
+            )
+            del value_model
+            # self.value_model = value_model.to(torch.cuda.current_device())  # w/o FSDP
             log_gpu_memory_usage("[Critic] After value model FSDP wrapping", rank=self._rank, logger=logger, level=logging.INFO)
             self.value_optimizer = torch.optim.AdamW(
                 self.value_model.parameters(),
@@ -929,6 +929,11 @@ class PolicyTrainerRayProcess(RayProcess):
         hf_config = deepcopy(self.model.config)
         timer = TimingManager()
 
+        accelerator = Namespace()
+        accelerator.process_index = self._rank
+        accelerator.num_processes = self._world_size
+        accelerator.is_main_process = self._rank == 0
+
         # Environment
         local_rollout_indices = slice(self._rank * args.local_rollout_batch_size, (self._rank + 1) * args.local_rollout_batch_size)
 
@@ -936,15 +941,10 @@ class PolicyTrainerRayProcess(RayProcess):
         args.env_gpu_id = self._rank
         logger.info(f"Current Device ID: {self._rank}; Task IDs: {args.task_ids}")
         train_envs = get_environment(args=args, mode="train")
-        eval_envs = get_environment(args=args, mode="eval")
+        if accelerator.is_main_process:
+            eval_envs = get_environment(args=args, mode="eval")
         action_dim = train_envs.action_space.shape[0]   # e.g., 7
-
         padding_side = "right"  # Ref: https://github.com/openvla/openvla/issues/189
-
-        accelerator = Namespace()
-        accelerator.process_index = self._rank
-        accelerator.num_processes = self._world_size
-        accelerator.is_main_process = self._rank == 0
         
         dist.barrier()
         if accelerator.is_main_process:
@@ -987,6 +987,13 @@ class PolicyTrainerRayProcess(RayProcess):
         dist.barrier()
 
         def _broadcast_to_vllm():
+            # use_prefix_cache = args.enable_prefix_caching
+            # cache_reset_refs = []
+            # if use_prefix_cache and dist.get_rank() == 0:
+            #     # clear prefix cache
+            #     for engine in vllm_engines:
+            #         cache_reset_refs.append(engine.reset_prefix_cache.remote())
+
             torch.cuda.empty_cache()
             model = self.model
             param_names = []
@@ -1043,6 +1050,8 @@ class PolicyTrainerRayProcess(RayProcess):
                         dist.broadcast(param.data, 0, group=self.model_update_group)
                         ray.get(refs)
                         refs = None  # Clear refs to free memory
+            # if cache_reset_refs:
+            #     ray.get(cache_reset_refs)
             torch.cuda.empty_cache()
             dist.barrier()
 
@@ -1085,7 +1094,7 @@ class PolicyTrainerRayProcess(RayProcess):
         ):
             llm = vllm_engines[0]
             while True:
-            # for _ in range(resume_training_step * args.num_steps, args.num_training_steps * args.num_steps + 1):
+            # for _ in range(resume_training_step * args.num_steps, (args.num_training_steps+1) * args.num_steps):
                 g_queries_list = prompt_ids_Q.get()
                 if g_queries_list is None:
                     break
@@ -1116,7 +1125,10 @@ class PolicyTrainerRayProcess(RayProcess):
                         unnorm_key=args.unnorm_key,
                         )
                 )
-                logger.info(f"🔥🔥🔥 Action generation time: {time.time() - generation_start_time:.2f} seconds")
+                logger.info(
+                    f"🔥🔥🔥 Action generation time: {time.time() - generation_start_time:.2f} s, "
+                    f"with bs: {len(llm_inputs)}"
+                )
                 response_ids_Q.put((actions, response_ids, response_logprobs))
 
         resume_training_step = 1
@@ -1312,7 +1324,7 @@ class PolicyTrainerRayProcess(RayProcess):
                         _broadcast_to_vllm()
                 if accelerator.is_main_process: #and args.verbose:
                     logger.info(
-                        f"🔥🔥🔥 Syncing weights using shared memory; Time to sync weights: {time.time() - start_time:.2f} seconds"
+                        f"🔥🔥🔥 Syncing weights using shared memory; Time to sync weights: {time.time() - start_time:.2f} s"
                     )
                 # Eval the current model
                 if (args.eval_freq > 0 and training_step % args.eval_freq == 0):
@@ -1401,7 +1413,7 @@ class PolicyTrainerRayProcess(RayProcess):
                         else:
                             value = torch.zeros(args.local_rollout_forward_batch_size, device=device)
                         torch.cuda.empty_cache()
-                        logger.info(f"Value time: {time.time() - start_time} seconds")
+                        logger.info(f"Value time: {time.time() - start_time} s")
 
                         # logger.info(f"{value=}")
 
@@ -1413,7 +1425,7 @@ class PolicyTrainerRayProcess(RayProcess):
                                 args.pad_token_id, context_length, args.temperature
                             )
                         torch.cuda.empty_cache()
-                        # logger.info(f"Forward time: {time.time() - start_time} seconds")
+                        # logger.info(f"Forward time: {time.time() - start_time} s")
                         # breakpoint()
 
                         # Compute a score using the process reward model

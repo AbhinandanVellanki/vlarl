@@ -101,8 +101,8 @@ def test_ppo_multi_gpu():
         "--task_ids", "[0,1,2,3,4,5,6,7,8,9]",  # Modified for testing
         "--run_root_dir", "checkpoints/debug/root",
         "--adapter_tmp_dir", "checkpoints/debug/adapter",
-        "--per_device_train_batch_size", "4",
-        "--local_mini_batch_size", "4",
+        "--per_device_train_batch_size", "8",
+        "--local_mini_batch_size", "8",
         "--local_rollout_batch_size", "10",
         "--local_rollout_forward_batch_size", "10",
         # "--actor_num_gpus_per_node", "[7]",
@@ -117,14 +117,16 @@ def test_ppo_multi_gpu():
         "--cliprange_high", "0.4",
         "--cliprange_low", "0.2",
         "--gamma", "1.0",
-        "--num_steps", "4",  # Modified for testing
-        "--max_env_length", "4",  # Modified for testing
+        "--num_steps", "8",  # Modified for testing
+        "--max_env_length", "8",  # Modified for testing
         "--total_episodes", "100000",
         "--vllm_tensor_parallel_size", "1",
         "--vllm_enforce_eager", "True",
         "--enable_prefix_caching", "False",
+        # "--vllm_enforce_eager", "False",
+        # "--enable_prefix_caching", "True",
         "--gpu_memory_utilization", "0.9",
-        "--use_lora", "True",
+        "--use_lora", "False",
         "--enable_gradient_checkpointing", "False",
         "--sharding_strategy", "shard-grad-op",
         "--offload", "False",
@@ -135,10 +137,9 @@ def test_ppo_multi_gpu():
         "--norm_adv", "False",
         "--use_curriculum", "True",
         "--curriculum_temp", "1.0",
-        # "--success_history_window", "20",
-        "--save_freq", "1",  # Save more frequently for testing
-        "--init_eval", "True",
-        "--eval_freq", "1",  # Evaluate more frequently for testing
+        "--save_freq", "10",  # Save more frequently for testing
+        "--init_eval", "False",
+        "--eval_freq", "10",  # Evaluate more frequently for testing
         "--save_video", "True",
         # "--use_wandb", "True",
         "--use_wandb", "False",
