@@ -82,6 +82,7 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --dataset_name ${DATA_ROOT} \
     --task_suite_name ${DATA_NAME} \
     --num_trials_per_task 50 \
+    --eval_num_trials_per_task 1 \
     --task_ids "[${TASK_IDS}]" \
     --run_root_dir "checkpoints/${DATA_ROOT}/root" \
     --adapter_tmp_dir "checkpoints/${DATA_ROOT}/adapter" \
@@ -93,7 +94,7 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --temperature 1.7 \
     --num_epochs 1 \
     --value_init_steps 3 \
-    --learning_rate 2e-5 \
+    --learning_rate 5e-6 \
     --value_learning_rate 2e-5 \
     --policy_max_grad_norm 1.0 \
     --value_max_grad_norm 1.0 \

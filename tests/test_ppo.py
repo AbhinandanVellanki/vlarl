@@ -30,6 +30,7 @@ def test_ppo_multi_gpu():
         "--dataset_name", "libero_goal_no_noops",
         "--task_suite_name", "libero_goal",
         "--num_trials_per_task", "2",  # Modified for testing
+        "--eval_num_trials_per_task", "1",
         "--task_ids", "[0,1,2,3,4,5,6,7,8,9]",  # Modified for testing
         "--run_root_dir", "checkpoints/debug/root",
         "--adapter_tmp_dir", "checkpoints/debug/adapter",

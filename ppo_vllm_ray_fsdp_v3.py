@@ -192,7 +192,9 @@ class Args:
     num_tasks_per_suite: Optional[int] = None
     """Number of tasks per suite"""
     num_trials_per_task: int = 50
-    """Number of rollouts per task"""
+    """Number of rollouts per task for training"""
+    eval_num_trials_per_task: int = 1
+    """Number of rollouts per task for evaluation"""
     num_envs: Optional[int] = None
     """Number of parallel vec environments"""
     task_ids: Optional[List[int]] = None
@@ -475,9 +477,9 @@ def get_environment(args: Args, mode: str = "train"):
     env = LiberoVecEnv(
         task_suite_name=args.task_suite_name,
         task_ids=args.task_ids,
-        num_trials_per_task=args.num_trials_per_task if mode=="train" else 1,
+        num_trials_per_task=args.num_trials_per_task if mode=="train" else args.eval_num_trials_per_task,
         resize_size=(224, 224),
-        max_episode_length=args.max_env_length,
+        max_episode_length=args.max_env_length if mode=="train" else None,
         num_envs=args.num_envs,
         num_steps_wait=args.num_steps_wait,
         seed=args.seed,
@@ -743,15 +745,16 @@ class PolicyTrainerRayProcess(RayProcess):
                 value_model = CriticVLA(args, value_model, adapter_dir=args.value_model_path)
                 auto_wrap_policy = get_fsdp_wrap_policy_openvla(value_model, is_lora=True)
             elif args.value_model_type == "film":
-                text_encoder = AutoModel.from_pretrained(
-                    "distilbert/distilbert-base-uncased", 
-                    torch_dtype=torch.bfloat16, 
-                    attn_implementation="flash_attention_2",
-                )
-                value_model = CriticFilm(text_encoder=text_encoder)
-                logger.info("[Critic] Initialized FiLM model from scratch")
+                # text_encoder = AutoModel.from_pretrained(
+                #     "distilbert/distilbert-base-uncased", 
+                #     torch_dtype=torch.bfloat16, 
+                #     attn_implementation="flash_attention_2",
+                # )
+                # value_model = CriticFilm(text_encoder=text_encoder)
+                # logger.info("[Critic] Initialized FiLM model from scratch")
                 # auto_wrap_policy = get_fsdp_wrap_policy(module=value_model)
                 # auto_wrap_policy = get_fsdp_wrap_policy_film(module=value_model)
+                raise NotImplementedError("FiLM value model is not working yet.")
             else:
                 raise ValueError(f"Value model: {args.value_model_type} not found")
 
@@ -763,7 +766,6 @@ class PolicyTrainerRayProcess(RayProcess):
                 state_dict = torch.load(value_ckpt_path, map_location="cpu")
                 value_model.load_state_dict(state_dict, strict=False)
                 self.args.value_init_steps = 0
-
             value_model.print_trainable_parameters()
             value_model.to(torch_dtype)
             disable_dropout_in_model(value_model)
