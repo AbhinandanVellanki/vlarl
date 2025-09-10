@@ -41,8 +41,8 @@ DATA_ROOT=${DATA_NAME}_no_noops
 # local_rollout_batch_size=10
 
 # Total H20 GPUs (full)
-# per_device_train_batch_size=8   # zero2
-per_device_train_batch_size=4   # ddp
+per_device_train_batch_size=8   # zero2
+# per_device_train_batch_size=4   # ddp
 local_rollout_batch_size=10
 
 # Total 2 A100 GPUs
@@ -93,8 +93,8 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --temperature 1.7 \
     --num_epochs 1 \
     --value_init_steps 3 \
-    --learning_rate 3e-6 \
-    --value_learning_rate 3e-5 \
+    --learning_rate 2e-5 \
+    --value_learning_rate 2e-5 \
     --policy_max_grad_norm 1.0 \
     --value_max_grad_norm 1.0 \
     --cliprange_high 0.4 \
@@ -115,7 +115,7 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --value_use_lora False \
     --clip_vloss False \
     --norm_adv False \
-    --use_curriculum True \
+    --use_curriculum False \
     --curriculum_temp 1.0 \
     --curriculum_min_prob 0.0 \
     --save_freq 10 \

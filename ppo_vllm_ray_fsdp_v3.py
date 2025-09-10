@@ -193,7 +193,7 @@ class Args:
     """Number of tasks per suite"""
     num_trials_per_task: int = 50
     """Number of rollouts per task"""
-    n_rollout_threads: Optional[int] = None
+    num_envs: Optional[int] = None
     """Number of parallel vec environments"""
     task_ids: Optional[List[int]] = None
     """Task ids to run"""
@@ -418,7 +418,7 @@ def calculate_runtime_args(args: Args,):
     args.world_size = sum(args.actor_num_gpus_per_node)
     args.micro_batch_size = int(args.per_device_train_batch_size * args.world_size)
     args.rollout_batch_size = int(args.local_rollout_batch_size * args.world_size)
-    args.n_rollout_threads = args.local_rollout_batch_size
+    args.num_envs = args.local_rollout_batch_size
     args.num_tasks_per_suite = args.local_rollout_batch_size
 
     # assert args.num_tasks_per_suite == 10
@@ -478,7 +478,8 @@ def get_environment(args: Args, mode: str = "train"):
         num_trials_per_task=args.num_trials_per_task if mode=="train" else 1,
         resize_size=(224, 224),
         max_episode_length=args.max_env_length,
-        num_envs=args.n_rollout_threads,
+        num_envs=args.num_envs,
+        num_steps_wait=args.num_steps_wait,
         seed=args.seed,
         rand_init_state=True if mode=="train" else False,
     )
@@ -663,24 +664,24 @@ class PolicyTrainerRayProcess(RayProcess):
         # cpu_offload = CPUOffload(offload_params=True) if args.offload else None
         cpu_offload = None  # NOTE:  We force turn off CPUOffload for critic because it causes incorrect results when using grad accumulation
 
-        # fsdp_precision_policy = MixedPrecision(
-        #     param_dtype=torch.bfloat16, reduce_dtype=torch.float32, buffer_dtype=torch.float32
-        # )
-        # self.model = FSDP(
-        #     model,
-        #     cpu_offload=cpu_offload,
-        #     param_init_fn=init_fn,
-        #     use_orig_params=False,
-        #     auto_wrap_policy=auto_wrap_policy,
-        #     device_id=torch.cuda.current_device(),
-        #     sharding_strategy=fsdp_sharding_strategy,
-        #     mixed_precision=fsdp_precision_policy,
-        #     sync_module_states=True,
-        #     device_mesh=self.device_mesh,
-        #     forward_prefetch=False,
-        # )
-        # del model
-        self.model = model.to(torch.cuda.current_device())    # w/o FSDP
+        fsdp_precision_policy = MixedPrecision(
+            param_dtype=torch.bfloat16, reduce_dtype=torch.float32, buffer_dtype=torch.float32
+        )
+        self.model = FSDP(
+            model,
+            cpu_offload=cpu_offload,
+            param_init_fn=init_fn,
+            use_orig_params=False,
+            auto_wrap_policy=auto_wrap_policy,
+            device_id=torch.cuda.current_device(),
+            sharding_strategy=fsdp_sharding_strategy,
+            mixed_precision=fsdp_precision_policy,
+            sync_module_states=True,
+            device_mesh=self.device_mesh,
+            forward_prefetch=False,
+        )
+        del model
+        # self.model = model.to(torch.cuda.current_device())    # w/o FSDP
         logger.info("[Actor] Initialized FSDP model")
         log_gpu_memory_usage("[Actor] After model init", rank=self._rank, logger=logger, level=logging.INFO)
         self.policy_optimizer = torch.optim.AdamW(
@@ -754,6 +755,15 @@ class PolicyTrainerRayProcess(RayProcess):
             else:
                 raise ValueError(f"Value model: {args.value_model_type} not found")
 
+            # Load initialized value model if a checkpoint exists; if loaded, skip value-init next runs
+            value_ckpt_dir = os.path.join(args.exp_dir, "value_model")
+            value_ckpt_path = os.path.join(value_ckpt_dir, "model.pt")
+            if os.path.isdir(value_ckpt_dir) and os.path.isfile(value_ckpt_path):
+                logger.info(f"[Critic] Found value model checkpoint at {value_ckpt_path}. Loading and skipping value init phase.")
+                state_dict = torch.load(value_ckpt_path, map_location="cpu")
+                value_model.load_state_dict(state_dict, strict=False)
+                self.args.value_init_steps = 0
+
             value_model.print_trainable_parameters()
             value_model.to(torch_dtype)
             disable_dropout_in_model(value_model)
@@ -761,24 +771,24 @@ class PolicyTrainerRayProcess(RayProcess):
                 value_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
 
             logger.info(f'[Critic] wrap_policy: {auto_wrap_policy}')
-            # fsdp_precision_policy = MixedPrecision(
-            #     param_dtype=torch.float32, reduce_dtype=torch.float32, buffer_dtype=torch.float32
-            # )
-            # self.value_model = FSDP(
-            #     value_model,
-            #     cpu_offload=cpu_offload,
-            #     param_init_fn=init_fn,
-            #     use_orig_params=False,
-            #     device_id=torch.cuda.current_device(),
-            #     auto_wrap_policy=auto_wrap_policy,
-            #     sharding_strategy=fsdp_sharding_strategy,
-            #     mixed_precision=fsdp_precision_policy,
-            #     sync_module_states=True,
-            #     device_mesh=self.device_mesh,
-            #     forward_prefetch=False,
-            # )
-            # del value_model
-            self.value_model = value_model.to(torch.cuda.current_device())  # w/o FSDP
+            fsdp_precision_policy = MixedPrecision(
+                param_dtype=torch.float32, reduce_dtype=torch.float32, buffer_dtype=torch.float32
+            )
+            self.value_model = FSDP(
+                value_model,
+                cpu_offload=cpu_offload,
+                param_init_fn=init_fn,
+                use_orig_params=False,
+                device_id=torch.cuda.current_device(),
+                auto_wrap_policy=auto_wrap_policy,
+                sharding_strategy=fsdp_sharding_strategy,
+                mixed_precision=fsdp_precision_policy,
+                sync_module_states=True,
+                device_mesh=self.device_mesh,
+                forward_prefetch=False,
+            )
+            del value_model
+            # self.value_model = value_model.to(torch.cuda.current_device())  # w/o FSDP
             log_gpu_memory_usage("[Critic] After value model FSDP wrapping", rank=self._rank, logger=logger, level=logging.INFO)
             self.value_optimizer = torch.optim.AdamW(
                 self.value_model.parameters(),
@@ -1763,6 +1773,12 @@ class PolicyTrainerRayProcess(RayProcess):
                 os.makedirs(step_dir, exist_ok=True)
                 logger.info(f"Saving model at step {training_step} to {step_dir}")
                 self.save_model(self.model, processor, step_dir)
+
+            # Save value model once after finishing value_init_steps for reuse in future runs
+            if args.use_value_model and args.value_init_steps > 0 and training_step == args.value_init_steps:
+                value_dir = os.path.join(args.exp_dir, "value_model")
+                logger.info(f"[Critic] Saving initialized value model at step {training_step} to {value_dir}")
+                self.save_model(self.value_model, processor, value_dir)
         
         logger.info(f"Saving final model at step {training_step} to {args.exp_dir}")
         self.save_model(self.model, processor, args.exp_dir)
@@ -1936,7 +1952,8 @@ def main(args: Args):
         tensor_parallel_size=args.vllm_tensor_parallel_size,
         enforce_eager=args.vllm_enforce_eager,
         pretrain=args.pretrained_checkpoint,
-        trust_remote_code=True, # TODO: support False here (modify vllm)
+        trust_remote_code=True,
+        # trust_remote_code=False,  # not working
         revision=None,
         seed=args.seed,
         enable_prefix_caching=args.enable_prefix_caching,
@@ -1946,7 +1963,7 @@ def main(args: Args):
 
     logger.info("======== all models initialized =========")
 
-    # Save dataset statistics for inference
+    # Save dataset statistics for inference (only once)
     # from prismatic.models.backbones.llm.prompting import PurePromptBuilder, VicunaV15ChatPromptBuilder
     # from prismatic.vla.action_tokenizer import ActionTokenizer
     # from prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset

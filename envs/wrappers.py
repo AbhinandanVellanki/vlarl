@@ -43,8 +43,8 @@ class VideoWrapper(gym.Wrapper):
         self.replay_images = {i: [] for i in range(self.num_envs)}
 
         pixel_values = obs["pixel_values"]
-        # for i in range(min(len(pixel_values), self.num_envs)):
-        for i in range(self.num_envs):
+        for i in range(min(len(pixel_values), self.num_envs)):
+        # for i in range(self.num_envs):
             if self.video_counts[i] < self.max_videos_per_env:
                 img = pixel_values[i]
                 if self.task_descriptions:
@@ -66,8 +66,8 @@ class VideoWrapper(gym.Wrapper):
         obs, rewards, dones, truncated, info = self.env.step(actions, **kwargs)
 
         pixel_values = obs["pixel_values"]
-        # for i in range(min(len(pixel_values), self.num_envs)):
-        for i in range(self.num_envs):
+        for i in range(min(len(pixel_values), self.num_envs)):
+        # for i in range(self.num_envs):
             if self.video_counts[i] < self.max_videos_per_env and len(self.frames[i]) < 1000:
                 img = pixel_values[i]
                 if self.save_stats:

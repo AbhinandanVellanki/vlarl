@@ -67,14 +67,16 @@ def test_ppo_multi_gpu():
         "--value_use_lora", "False",
         "--clip_vloss", "False",
         "--norm_adv", "False",
-        "--use_curriculum", "True",
+        # "--use_curriculum", "True",
+        "--use_curriculum", "False",
         "--curriculum_temp", "1.0",
         "--curriculum_min_prob", "0.0",
         "--save_freq", "10",  # Save more frequently for testing
         "--eval_freq", "10",  # Evaluate more frequently for testing
         # "--init_eval", "True",
         "--init_eval", "False",
-        "--save_video", "True",
+        # "--save_video", "True",
+        "--save_video", "False",
         # "--use_wandb", "True",
         "--use_wandb", "False",
         "--wandb_offline", "False",

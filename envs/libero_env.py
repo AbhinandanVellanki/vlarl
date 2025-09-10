@@ -27,10 +27,11 @@ class LiberoVecEnv(gym.Env):
         model_family: str = "openvla",
         center_crop: bool = True,
         rand_init_state: bool = True,
+        num_envs: Optional[int] = None,
+        num_steps_wait: Optional[int] = 10,
         max_episode_length: Optional[int] = None,
         resolution: Optional[int] = 256,
         resize_size: Optional[Tuple[int, int]] = None,
-        num_envs: Optional[int] = None,
     ):
         super().__init__()
         self.task_suite_name = task_suite_name
@@ -44,6 +45,7 @@ class LiberoVecEnv(gym.Env):
         self.resolution = resolution
         self.seed_ = seed
         self.rand_init_state = rand_init_state
+        self.num_steps_wait = num_steps_wait
         
         if len(task_ids) < self.num_envs:
             raise ValueError(f"Not enough task_ids ({len(task_ids)}) for n_envs ({self.num_envs})")
@@ -133,7 +135,7 @@ class LiberoVecEnv(gym.Env):
         dummy_action = get_libero_dummy_action()
         dummy_actions = [dummy_action] * self.num_envs
         
-        for _ in range(10): # Stablize the env
+        for _ in range(self.num_steps_wait): # Stablize the env
             obs_list, _, _, _ = self.envs.step(dummy_actions)
         
         pixel_values = []
@@ -196,7 +198,7 @@ class LiberoVecEnv(gym.Env):
             self.envs.reset(id=done_indices.tolist())
             obs = self.envs.set_init_state(new_initial_states, id=done_indices.tolist())
 
-            for _ in range(10): # Stablize the env
+            for _ in range(self.num_steps_wait): # Stablize the env
                 obs, _, _, _ = self.envs.step(dummy_actions, id=done_indices.tolist())
 
             for i, done_idx in enumerate(done_indices):
