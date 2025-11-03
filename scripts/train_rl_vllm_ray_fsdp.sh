@@ -108,16 +108,11 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --sharding_strategy "full-shard" \
     --offload True \
     --use_value_model True \
-    --value_model_type "vla" \
-    --value_use_lora False \
-    --clip_vloss False \
-    --norm_adv True \
-    --use_curriculum False \
-    --curriculum_temp 1.0 \
-    --curriculum_min_prob 0.0 \
-    --save_freq 10 \
-    --eval_freq 10 \
-    --init_eval True \
+    --value_model_type film \
+    --value_use_lora True \
+    --value_lora_rank 32 \
+    --norm_adv False \
+    --save_freq 20 \
     --save_video True \
     --use_wandb True \
     --wandb_offline False \
