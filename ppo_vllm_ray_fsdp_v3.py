@@ -385,9 +385,9 @@ class Args:
     # wandb and HF tracking configs
     use_wandb: bool = False
     """If toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project: str = "openvla"
+    wandb_project: str = "VLARL"
     """The wandb's project name"""
-    wandb_entity: Optional[str] = "openvla_cvpr"
+    wandb_entity: Optional[str] = "deeprl_ais"
     """The entity (team) of wandb's project"""
     wandb_offline: bool = False
     """Whether to run wandb in offline mode"""

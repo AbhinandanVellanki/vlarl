@@ -36,18 +36,13 @@ POSTFIX=goal
 DATA_NAME=libero_${POSTFIX}
 DATA_ROOT=${DATA_NAME}_no_noops
 
-# Total H20 GPUs (lora)
-# per_device_train_batch_size=16
-# local_rollout_batch_size=10
-
-# Total H20 GPUs (full)
-per_device_train_batch_size=8   # zero2
-# per_device_train_batch_size=4   # ddp
-local_rollout_batch_size=10
-
 # Total 2 A100 GPUs
 # per_device_train_batch_size=16
 # local_rollout_batch_size=10
+
+# Total 2 4090 GPUs
+per_device_train_batch_size=2
+local_rollout_batch_size=1
 
 # Total 8 3090 GPUs
 # per_device_train_batch_size=1
@@ -107,11 +102,11 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --vllm_tensor_parallel_size 1 \
     --vllm_enforce_eager True \
     --enable_prefix_caching False \
-    --gpu_memory_utilization 0.9 \
-    --use_lora False \
-    --enable_gradient_checkpointing False \
-    --sharding_strategy "shard-grad-op" \
-    --offload False \
+    --gpu_memory_utilization 0.7 \
+    --use_lora True \
+    --enable_gradient_checkpointing True \
+    --sharding_strategy "full-shard" \
+    --offload True \
     --use_value_model True \
     --value_model_type "vla" \
     --value_use_lora False \
@@ -126,6 +121,6 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --save_video True \
     --use_wandb True \
     --wandb_offline False \
-    --wandb_project openvla \
-    --wandb_entity openvla_cvpr \
+    --wandb_project VLARL \
+    --wandb_entity deeprl_ais \
     --debug False
