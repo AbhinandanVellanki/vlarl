@@ -704,19 +704,24 @@ class PolicyTrainerRayProcess(RayProcess):
             # fsdp_precision_policy = MixedPrecision(
             #     param_dtype=torch.float32, reduce_dtype=torch.float32, buffer_dtype=torch.float32
             # )
-            self.value_model = FSDP(
-                value_model,
-                cpu_offload=cpu_offload,
-                param_init_fn=init_fn,
-                use_orig_params=False,
-                device_id=torch.cuda.current_device(),
-                auto_wrap_policy=auto_wrap_policy,
-                sharding_strategy=fsdp_sharding_strategy,
-                mixed_precision=fsdp_precision_policy,
-                sync_module_states=True,
-                device_mesh=self.device_mesh,
-                forward_prefetch=False,
-            )
+            if args.value_model_type != "film":
+                logger.info(f"[Rank {self._rank}] [Critic] wrap_policy: {auto_wrap_policy}")
+                self.value_model = FSDP(
+                    value_model,
+                    cpu_offload=cpu_offload,
+                    param_init_fn=init_fn,
+                    use_orig_params=False,
+                    device_id=torch.cuda.current_device(),
+                    auto_wrap_policy=auto_wrap_policy,
+                    sharding_strategy=fsdp_sharding_strategy,
+                    mixed_precision=fsdp_precision_policy,
+                    sync_module_states=True,
+                    device_mesh=self.device_mesh,
+                    forward_prefetch=False,
+                )
+            else:
+                # For FiLM, just move to device without FSDP
+                self.value_model = value_model.to(device=torch.cuda.current_device())
             del value_model
             log_gpu_memory_usage("[Critic] After value model FSDP wrapping", rank=self._rank, logger=logger, level=logging.INFO)
             self.value_optimizer = torch.optim.AdamW(

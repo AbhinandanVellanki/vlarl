@@ -86,8 +86,9 @@ CUDA_VISIBLE_DEVICES=$GPUS python \
     --sharding_strategy "full-shard" \
     --offload True \
     --use_value_model True \
-    --value_model_type "vla" \
-    --value_use_lora False \
+    --value_model_type film \
+    --value_use_lora True \
+    --value_lora_rank 32 \
     --norm_adv False \
     --save_freq 20 \
     --save_video True \
