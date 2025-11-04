@@ -816,6 +816,36 @@ class PolicyTrainerRayProcess(RayProcess):
             )
         torch.cuda.empty_cache()
         log_gpu_memory_usage("After all init", rank=self._rank, logger=logger, level=logging.INFO)
+    def safe_get_reward(self, model, query: torch.Tensor, pixel_value: torch.Tensor, pad_token_id: int):
+        """
+        Defensive wrapper for get_reward to avoid device-side CUDA asserts killing the worker.
+        On exception: log shapes and attempt a CPU repro to get a Python traceback, then return a
+        zero tensor fallback so the Ray worker can continue and we can inspect logs.
+        """
+        try:
+            return get_reward(model, query, pixel_value, pad_token_id)
+        except Exception as e:
+            logger.exception("[Critic] Exception in get_reward; attempting CPU repro and returning zeros")
+            try:
+                # Attempt a CPU repro to produce a readable Python traceback
+                model_cpu = None
+                try:
+                    model_cpu = model.to(torch.device("cpu"))
+                except Exception:
+                    model_cpu = None
+                q_cpu = query.cpu()
+                pv_cpu = pixel_value.cpu()
+                logger.info(f"[Critic] CPU repro shapes: query={tuple(q_cpu.shape)}, pixel_value={tuple(pv_cpu.shape)}")
+                # Call get_reward on CPU model if possible to get traceback
+                get_reward(model_cpu if model_cpu is not None else model, q_cpu, pv_cpu, pad_token_id)
+            except Exception:
+                logger.exception("[Critic] CPU repro also failed (Python traceback above)")
+            # Return safe fallback so training continues; preserve device
+            try:
+                return torch.zeros(query.shape[0], device=query.device, dtype=torch.float32)
+            except Exception:
+                # As a last resort return a CPU tensor
+                return torch.zeros(query.shape[0], dtype=torch.float32)
 
     def get_max_image_tokens(self) -> int:
         hf_config = self.hf_config
@@ -1434,7 +1464,7 @@ class PolicyTrainerRayProcess(RayProcess):
                         start_time = time.time()
                         if args.use_value_model:
                             with timer.timer("value"):
-                                value = get_reward(self.value_model, query, pixel_value, args.pad_token_id)
+                                value = self.safe_get_reward(self.value_model, query, pixel_value, args.pad_token_id)
                         else:
                             value = torch.zeros(args.local_rollout_forward_batch_size, device=device)
                         torch.cuda.empty_cache()
@@ -1545,9 +1575,7 @@ class PolicyTrainerRayProcess(RayProcess):
                         query = queries_next[i : i + args.local_rollout_forward_batch_size]
                         pixel_value = pixel_values_next[i : i + args.local_rollout_forward_batch_size]
                         with torch.no_grad():
-                            next_value[i : i + args.local_rollout_forward_batch_size] = get_reward(
-                                self.value_model, query, pixel_value, args.pad_token_id
-                            )
+                            next_value[i : i + args.local_rollout_forward_batch_size] = self.safe_get_reward(self.value_model, query, pixel_value, args.pad_token_id)
                 else:
                     next_value = torch.zeros(args.local_rollout_batch_size, device=device)
 
@@ -1613,7 +1641,7 @@ class PolicyTrainerRayProcess(RayProcess):
                             mb_values = b_values[micro_batch_inds]
 
                             if args.use_value_model:
-                                vpred = get_reward(
+                                vpred = self.safe_get_reward(
                                     self.value_model, mb_queries, mb_pixel_values, args.pad_token_id
                                 )
                                 vf_losses1 = torch.square(vpred - mb_return)
