@@ -13,6 +13,7 @@ from accelerate.utils import is_peft_model
 class CriticVLA(nn.Module):
 
     def __init__(self, cfg, base_model, adapter_dir=None, pad_token_id='32000', num_padding_at_beginning=0):
+        print("[Critic] Constructing CriticVLA", flush=True)
         super().__init__()
         self.cfg = cfg
         self.config = base_model.config.text_config
@@ -106,6 +107,7 @@ class CriticVLA(nn.Module):
 class CriticQwen(nn.Module):
     def __init__(self, all_args, adapter_dir=None):
         super().__init__()
+        print("[Critic] Constructing CriticQwen", flush=True)
 
         from transformers import Qwen2VLForConditionalGeneration, AutoTokenizer, AutoProcessor  # NOTE: needs transformers >= 4.46.0 
         
@@ -209,8 +211,27 @@ class CriticFilm(nn.Module):
     def __init__(self, text_encoder):
         import torchvision.models as models
         super().__init__()
+        print("[Critic] Constructing CriticFilm", flush=True)
         # Visual encoder (pretrained ResNet-18)
         self.resnet = models.resnet18(pretrained=True)
+        # MODIFY: Change the first conv layer to accept 6 channels instead of 3
+        original_conv = self.resnet.conv1
+        self.resnet.conv1 = nn.Conv2d(
+            6,  # Changed from 3 to 6 channels
+            original_conv.out_channels,
+            kernel_size=original_conv.kernel_size,
+            stride=original_conv.stride,
+            padding=original_conv.padding,
+            bias=original_conv.bias is not None
+        )
+        # Initialize new weights by duplicating the original weights
+        with torch.no_grad():
+            # Copy original 3-channel weights twice to fill 6 channels
+            self.resnet.conv1.weight[:, :3] = original_conv.weight
+            self.resnet.conv1.weight[:, 3:] = original_conv.weight
+            if original_conv.bias is not None:
+                self.resnet.conv1.bias = original_conv.bias
+        
         # Remove the final fully connected layer
         self.visual_encoder = nn.Sequential(*list(self.resnet.children())[:-2])
         self.visual_feature_dim = 512
@@ -275,6 +296,35 @@ class CriticFilm(nn.Module):
         Returns:
             Value estimations [batch_size, 1]
         """
+        # Defensive guard: ensure token ids are in [0, vocab_size-1]
+        # This prevents torch.embedding from indexing out-of-range ids (device assert).
+        import torch
+        try:
+            vocab_size = getattr(self.text_encoder.config, "vocab_size", None)
+        except Exception:
+            vocab_size = None
+
+        if vocab_size is not None and isinstance(input_ids, torch.Tensor):
+            # Work on a copy so upstream tensors are not modified unexpectedly.
+            ids = input_ids.clone()
+            # detect invalid ids
+            invalid_mask = (ids < 0) | (ids >= vocab_size)
+            if invalid_mask.any():
+                # choose pad_token_id if available and valid, else 0
+                pad_id = getattr(self.text_encoder.config, "pad_token_id", None)
+                if pad_id is None or not (0 <= pad_id < vocab_size):
+                    pad_id = 0
+                # Log unique offending ids (move to CPU safely)
+                try:
+                    bad_vals = ids[invalid_mask].unique().cpu().tolist()
+                except Exception:
+                    bad_vals = ["<couldn't move to cpu>"]
+                from termcolor import cprint
+                cprint(f"[Critic] Warning: found out-of-range token ids {bad_vals}; replacing with {pad_id}", "yellow", attrs=["bold"])
+                # replace invalid with pad_id
+                ids[invalid_mask] = pad_id
+            input_ids = ids
+
         # Extract visual features
         with torch.no_grad():
             visual_features = self.visual_encoder(pixel_values) # [B, 512, 7, 7]
@@ -319,7 +369,7 @@ if __name__ == "__main__":
     critic.print_trainable_parameters()
 
     input_ids = torch.randint(0, 100, (1, 10)).to(device=torch.device("cuda"), dtype=torch.long)
-    pixel_values = torch.randn(1, 3, 224, 224).to(device=torch.device("cuda"), dtype=torch.float32)
+    pixel_values = torch.randn(1, 6, 224, 224).to(device=torch.device("cuda"), dtype=torch.float32)  # Changed 3 to 6
     attention_mask = input_ids != 0
 
     with torch.autocast("cuda", dtype=torch.bfloat16):

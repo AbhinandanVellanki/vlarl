@@ -14,6 +14,9 @@
 # export RAY_DEDUP_LOGS=0 # log all ray instances
 export MESA_GL_VERSION_OVERRIDE=4.1
 export PYOPENGL_PLATFORM=egl
+export EGL_DEVICE_ID=0  # Set primary GPU for EGL
+export MUJOCO_GL=egl
+export CUDA_LAUNCH_BLOCKING=1
 
 # data
 POSTFIX=spatial
@@ -28,7 +31,7 @@ DATA_ROOT=${DATA_NAME}_no_noops
 # local_rollout_batch_size=10
 
 # Total 2 4090 GPUs
-per_device_train_batch_size=2
+per_device_train_batch_size=1
 local_rollout_batch_size=1
 
 # Total 8 3090 GPUs
@@ -36,7 +39,7 @@ local_rollout_batch_size=1
 # local_rollout_batch_size=1
 
 # GPU allocation
-GPUS=${1:-"0,1,2,3"}
+GPUS=${1:-"0,1"}
 MASTER_ADDR=localhost
 MASTER_PORT=12345
 NUM_GPUS=$(echo $GPUS | tr ',' '\n' | wc -l)
@@ -74,7 +77,7 @@ CUDA_VISIBLE_DEVICES=$GPUS python \
     --learning_rate 5e-6 \
     --value_learning_rate 5e-5 \
     --max_grad_norm 1.0 \
-    --num_steps 128 \
+    --num_steps 64 \
     --max_env_length 150 \
     --total_episodes 100000 \
     --vllm_tensor_parallel_size 1 \
