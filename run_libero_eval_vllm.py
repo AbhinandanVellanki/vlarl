@@ -23,6 +23,7 @@ from envs.libero_env import LiberoVecEnv
 from utils.vllm_utils2 import create_vllm_engines
 from vllm import SamplingParams
 import time
+from datetime import datetime
 import ray
 import threading
 
@@ -257,9 +258,12 @@ def eval_libero(cfg: GenerateConfig) -> None:
     run_id = f"EVAL-{cfg.task_suite_name}-{model_pet_name}-t-{cfg.temperature}-s-{cfg.seed}"
     if cfg.run_id_note is not None:
         run_id += f"--{cfg.run_id_note}"
-    local_log_dir = os.path.join(cfg.local_log_dir, run_id)
+    # Append a timestamp to the run ID to avoid overwriting previous runs with identical args.
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    unique_run_id = f"{run_id}-{timestamp}"
+    local_log_dir = os.path.join(cfg.local_log_dir, unique_run_id)
     os.makedirs(local_log_dir, exist_ok=True)
-    local_log_filepath = os.path.join(local_log_dir, run_id + ".txt")
+    local_log_filepath = os.path.join(local_log_dir, unique_run_id + ".txt")
     log_file = open(local_log_filepath, "w")
     cprint(f"Logging to local log file: {local_log_filepath}", "cyan")
 
