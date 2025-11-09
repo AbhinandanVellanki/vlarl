@@ -32,7 +32,7 @@ DATA_ROOT=${DATA_NAME}_no_noops
 
 # Total 2 4090 GPUs
 per_device_train_batch_size=1
-local_rollout_batch_size=1
+local_rollout_batch_size=2
 
 # Total 8 3090 GPUs
 # per_device_train_batch_size=1

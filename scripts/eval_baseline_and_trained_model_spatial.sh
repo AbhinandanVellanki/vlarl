@@ -15,11 +15,11 @@ LOCAL_LOG_DIR="${REPO_ROOT}/debug"
 ENV_GPU_ID=1
 
 # Paths / model ids
-BASELINE_HF="openvla-7b"
+# BASELINE_HF="openvla-7b"
 FINE_TUNED="MODEL/openvla-7b-finetuned-libero-${POSTFIX}"
+
 # Replace this with your actual merged/adapter directory if different
 PPO_MODEL_DIR="${REPO_ROOT}/checkpoints/libero_spatial_no_noops/root/ppo+libero_spatial_no_noops+tasks10+trials50+ns64+maxs150+rb1+tb1+lr-5e-06+vlr-5e-05+s-1+lora"
-
 EVAL_COMMON_ARGS=(
   --model_family openvla
   --task_suite_name ${TASK_SUITE}
@@ -32,6 +32,8 @@ EVAL_COMMON_ARGS=(
   --local_log_dir "${LOCAL_LOG_DIR}"
   --center_crop True
   --temperature 1.0
+  --save_video True \
+  --save_images False \
 )
 
 run_eval() {
@@ -58,7 +60,7 @@ run_eval() {
 # run_eval "${BASELINE_HF}" 50 10 "HF baseline (openvla-7b)"
 
 # 2) LoRA SFT baseline (MODEL/...)
-run_eval "${FINE_TUNED}" 50 10 "Fine-tuned baseline (MODEL/openvla-7b-finetuned-libero-${POSTFIX})"
+# run_eval "${FINE_TUNED}" 50 10 "Fine-tuned baseline (MODEL/openvla-7b-finetuned-libero-${POSTFIX})"
 
 # 3) PPO trained LoRA Finetuned Model (merged) (local checkpoint)
 if [ -d "${PPO_MODEL_DIR}" ]; then

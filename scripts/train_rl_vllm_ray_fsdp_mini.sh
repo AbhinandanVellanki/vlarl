@@ -18,7 +18,7 @@ per_device_train_batch_size=1
 local_rollout_batch_size=4
 
 # GPU allocation
-GPUS=${1:-"0,1,2,3"}
+GPUS=${1:-"0,1"}
 MASTER_ADDR=localhost
 MASTER_PORT=12345
 NUM_GPUS=$(echo $GPUS | tr ',' '\n' | wc -l)
@@ -69,11 +69,13 @@ CUDA_VISIBLE_DEVICES=$GPUS python \
     --value_model_type "vla" \
     --value_use_lora False \
     --process_reward_model True \
+    --prm_model_name_or_path "MODEL/Qwen2-VL-2B-Instruct" \
+    --prm_reward_weight 0.1 \
     --norm_adv True \
     --save_freq 10000 \
     --save_video True \
-    --use_wandb False \
+    --use_wandb True \
     --wandb_offline False \
-    --wandb_project openvla \
-    --wandb_entity openvla_cvpr \
+    --wandb_project VLARL \
+    --wandb_entity deeprl_ais \
     --debug True

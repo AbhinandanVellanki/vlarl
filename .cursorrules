@@ -1,0 +1,102 @@
+# Project Context
+This is a Deep Reinforcement Learning project focusing on Vision-Language-Action (VLA) models for robotic manipulation, specifically using PPO with OpenVLA on LIBERO tasks.
+
+# Code Generation Principles
+
+## Accuracy & Quality
+- Write production-ready code with proper error handling and edge case consideration
+- Use type hints consistently (Python 3.8+ style)
+- Follow established patterns in the codebase (check existing files before implementing)
+- For RL/robotics code: ensure proper tensor shapes, device handling (CPU/GPU/multi-GPU), and numerical stability
+- For distributed training: handle Ray, FSDP, vLLM patterns correctly
+- Validate assumptions about data shapes, types, and ranges early
+
+## Documentation Style
+- **NEVER create markdown documents** (CHANGELOG.md, UPDATE.md, FIXES.md, etc.) unless explicitly requested
+- Add descriptive comments for:
+  - Complex algorithms or mathematical operations (e.g., PPO loss calculations, advantage normalization)
+  - Non-obvious design decisions or workarounds
+  - Function/class docstrings explaining parameters, return values, and side effects
+  - Configuration parameters and their valid ranges
+- Avoid redundant comments that merely restate the code
+- No excessive or overly verbose comments
+
+## Code Style
+- Follow PEP 8 conventions
+- Use meaningful variable names (e.g., `policy_loss` not `pl`)
+- Keep functions focused and modular (max ~50 lines when reasonable)
+- Use early returns to reduce nesting
+- For ML code: separate data loading, model definition, training logic, and evaluation clearly
+
+## Project-Specific Patterns
+
+### PyTorch & Deep Learning
+- Always use proper device management (`.to(device)`)
+- Use `torch.no_grad()` for inference/evaluation
+- Clear gradients appropriately in training loops
+- Handle tensor shape assertions explicitly where critical
+- Use mixed precision training patterns when applicable (torch.amp)
+
+### Reinforcement Learning
+- Follow established PPO patterns in the codebase
+- Properly normalize advantages and returns
+- Handle episode termination vs truncation correctly
+- Log relevant metrics (rewards, policy loss, value loss, KL divergence, entropy)
+- Use proper replay buffer handling
+
+### VLA & Vision-Language Models
+- Handle image preprocessing consistently with model expectations
+- Manage tokenization and prompt formatting correctly
+- Use proper LoRA/fine-tuning patterns
+- Handle vision encoder and language model components appropriately
+
+### Distributed Training
+- Use Ray and FSDP patterns correctly
+- Handle checkpoint saving/loading for distributed settings
+- Manage inter-process communication properly
+- Consider memory efficiency for multi-GPU setups
+
+### Configuration & Experiments
+- Use existing config patterns (YAML, argparse, dataclasses)
+- Make hyperparameters easily adjustable
+- Use clear experiment naming conventions
+- Log hyperparameters to wandb/tensorboard
+
+## File Organization
+- Keep related functionality together
+- Use clear module/package structure
+- Separate configs, models, training logic, evaluation, and utilities
+- Place scripts in appropriate directories (scripts/, experiments/, etc.)
+
+## Testing & Validation
+- Add shape assertions for critical tensor operations
+- Validate configuration values at startup
+- Test edge cases (empty batches, single samples, etc.)
+- Check for NaN/Inf in training loops
+
+## Error Handling
+- Use informative error messages with context
+- Fail fast for configuration errors
+- Handle common failure modes (OOM, NaN losses, checkpoint loading failures)
+- Add helpful suggestions in error messages when possible
+
+## Dependencies & Environment
+- Be mindful of the existing dependency stack (PyTorch, Ray, vLLM, transformers, etc.)
+- Don't add unnecessary dependencies
+- Check compatibility with existing package versions
+- Use the established environment management (environment.yml)
+
+## Performance Considerations
+- Avoid unnecessary data copies
+- Use batching effectively
+- Profile bottlenecks before optimizing
+- Consider memory usage for large models/datasets
+- Use appropriate dtype (float32 vs float16 vs bfloat16)
+
+# Response Style
+- Provide clear, concise explanations
+- Focus on implementation, not documentation artifacts
+- When asked to fix/update, make the changes directly
+- Explain trade-offs when multiple approaches exist
+- Reference specific files/patterns in the codebase when relevant
+

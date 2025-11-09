@@ -43,6 +43,7 @@ import math
 import json
 import gc
 import time
+from datetime import datetime
 import random
 import shutil
 import socket
@@ -340,6 +341,8 @@ class Args:
     """the KL estimator to use"""
     process_reward_model: bool = False
     """the process reward model (prm), for dense reward"""
+    prm_reward_weight: float = 0.1
+    """weight for PRM rewards when combining with environment rewards"""
     num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
     norm_adv: bool = False
@@ -739,6 +742,37 @@ class PolicyTrainerRayProcess(RayProcess):
                 num_warmup_steps=value_warm_up_steps,
                 num_training_steps=num_training_steps,
             )
+        
+        # Initialize Process Reward Model (PRM)
+        self.reward_model = None
+        if args.process_reward_model:
+            logger.info("[PRM] Initializing Process Reward Model")
+            log_gpu_memory_usage("[PRM] Before PRM init", rank=self._rank, logger=logger, level=logging.INFO)
+            
+            # Add use_vllm flag to args if not present (for PRM inference)
+            if not hasattr(args, 'use_vllm_prm'):
+                args.use_vllm_prm = False  # Set to True if you want to use vLLM for PRM
+            
+            if args.prm_model_name_or_path:
+                from ppo.models.prm import QwenProcessRM
+                # Temporarily store the use_vllm flag
+                original_use_vllm = getattr(args, 'use_vllm', False)
+                args.use_vllm = args.use_vllm_prm
+                
+                self.reward_model = QwenProcessRM(args)
+                
+                # Restore original use_vllm flag
+                args.use_vllm = original_use_vllm
+                logger.info(f"[PRM] Loaded QwenProcessRM from {args.prm_model_name_or_path}")
+                if args.prm_checkpoint_path:
+                    logger.info(f"[PRM] Using checkpoint: {args.prm_checkpoint_path}")
+            else:
+                from ppo.models.prm import DummyRM
+                self.reward_model = DummyRM(args)
+                logger.info("[PRM] Using DummyRM (returns zeros)")
+            
+            log_gpu_memory_usage("[PRM] After PRM init", rank=self._rank, logger=logger, level=logging.INFO)
+
         torch.cuda.empty_cache()
         log_gpu_memory_usage("After all init", rank=self._rank, logger=logger, level=logging.INFO)
     def safe_get_reward(self, model, query: torch.Tensor, pixel_value: torch.Tensor, pad_token_id: int):
@@ -1267,14 +1301,12 @@ class PolicyTrainerRayProcess(RayProcess):
                         # breakpoint()
 
                         # Compute a score using the reward model
-                        # score = torch.zeros(query.shape[0], device=device)
-                        # if args.process_reward_model:
-                        #     processed_score = get_reward(self.reward_model, query_response, args.pad_token_id, context_length)
-                        #     score += processed_score
+                        score = torch.zeros(query.shape[0], device=device)
+                        if args.process_reward_model:
+                            if not hasattr(self, 'prm_scores_buffer'):
+                                self.prm_scores_buffer = {}
+                            self.prm_scores_buffer[step] = prm_score.detach().cpu().numpy()
                         
-                        # Accumulate rollout data
-                        # logprobs[step, i : i + args.local_rollout_forward_batch_size] = logprob
-                        # scores[step, i : i + args.local_rollout_forward_batch_size] = score
                         values[step, i : i + args.local_rollout_forward_batch_size] = value
 
                     del query, response, pixel_value, value
@@ -1286,11 +1318,18 @@ class PolicyTrainerRayProcess(RayProcess):
                     "pixel_values": torch.zeros(args.local_rollout_batch_size, num_channels, image_height, image_width, device=device, dtype=torch.float32),
                 }
                 logger.info(f"🕹️🕹️🕹️ Env {step=}")
+                
+                # Prepare PRM rewards for logging if enabled
+                prm_rewards_for_logging = None
+                if args.process_reward_model and hasattr(self, 'prm_scores_buffer') and step in self.prm_scores_buffer:
+                    prm_rewards_for_logging = self.prm_scores_buffer[step]
+                
                 with timer.timer("env_step"):
                     local_obs, local_rewards, local_dones, local_infos = train_envs.step(
                         local_actions, 
                         values=values[step].detach().cpu().numpy(), 
-                        log_probs=vllm_logprobs[step].detach().cpu().numpy()
+                        log_probs=vllm_logprobs[step].detach().cpu().numpy(),
+                        prm_rewards=prm_rewards_for_logging
                     )
                 processed_obs = process_with_padding_side(processor, local_obs["prompts"], local_obs["pixel_values"], padding=True, padding_side=padding_side).to(device, dtype=torch.float32)
                 local_token_obs["input_ids"][:, :processed_obs["input_ids"].shape[1]] = processed_obs["input_ids"]
@@ -1315,6 +1354,15 @@ class PolicyTrainerRayProcess(RayProcess):
 
                 local_rewards = torch.tensor(local_rewards, device=device, dtype=torch.float32)
                 local_dones = torch.tensor(local_dones, device=device, dtype=torch.float32)
+                
+                # Add PRM dense rewards to environment rewards
+                if args.process_reward_model and hasattr(self, 'prm_scores_buffer') and step in self.prm_scores_buffer:
+                    prm_rewards_tensor = torch.tensor(self.prm_scores_buffer[step], device=device, dtype=torch.float32)
+                    # Scale PRM rewards to avoid overwhelming terminal rewards
+                    prm_weight = getattr(args, 'prm_reward_weight', 0.1)
+                    local_rewards = local_rewards + prm_weight * prm_rewards_tensor
+                    logger.info(f"[PRM] Added weighted PRM rewards (weight={prm_weight}): {prm_rewards_tensor.tolist()}")
+                
                 scores[step] = local_rewards
 
                 # compute episodic reward
@@ -1556,8 +1604,56 @@ class PolicyTrainerRayProcess(RayProcess):
                 **timer.get_log(),  # Unpack all the timing logs
             }
 
+            # Update EMA of episodic return and save best model if improved (only on main process)
             if accelerator.is_main_process:
+                # Print metrics to console/tb and publish to metrics queue
                 print_rich_single_line_metrics(metrics)
+
+                try:
+                    # current episodic return (reduced across processes)
+                    current_return = float(global_metrics.get("objective/episodic_return", 0.0))
+                    alpha = 0.99  # EMA factor requested
+
+                    # initialize EMA on first observation
+                    if not hasattr(self, "_ema_return") or self._ema_return is None:
+                        self._ema_return = float(current_return)
+                    else:
+                        self._ema_return = float(alpha * float(self._ema_return) + (1.0 - alpha) * float(current_return))
+
+                    # initialize best tracker if missing
+                    if not hasattr(self, "_best_ema_return") or self._best_ema_return is None:
+                        self._best_ema_return = float("-inf")
+
+                    # If EMA improved, save model and write metadata
+                    if float(self._ema_return) > float(self._best_ema_return):
+                        self._best_ema_return = float(self._ema_return)
+                        best_dir = os.path.join(args.exp_dir, "best_return")
+                        os.makedirs(best_dir, exist_ok=True)
+                        logger.info(f"[Checkpoint] New best EMA episodic_return={self._ema_return:.4f} (current={current_return}); saving model to {best_dir}")
+                        try:
+                            # Save model (this function handles FSDP synchronization)
+                            self.save_model(self.model, processor, best_dir)
+                        except Exception:
+                            logger.exception("[Checkpoint] save_model() failed for best_return")
+
+                        # write metadata.json
+                        try:
+                            meta = {
+                                "timestamp": datetime.now().isoformat(),
+                                "ema_return": float(self._ema_return),
+                                "current_return": float(current_return),
+                                "training_step": int(training_step),
+                                "global_step": int(global_step),
+                                "exp_id": getattr(args, "exp_id", None),
+                                "vla_path": getattr(args, "vla_path", None),
+                            }
+                            with open(os.path.join(best_dir, "metadata.json"), "w") as mf:
+                                json.dump(meta, mf, indent=2)
+                        except Exception:
+                            logger.exception("[Checkpoint] failed to write metadata.json for best_return")
+                except Exception:
+                    logger.exception("[Checkpoint] failed to update EMA / best-return logic")
+
                 metrics_queue.put((metrics, global_step))
             del (global_metrics, metrics)
             gc.collect()
