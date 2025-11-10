@@ -87,6 +87,7 @@ from ppo.utils.util import TimingManager
 from ppo.utils.vllm_utils2 import create_vllm_engines, init_process_group
 from ppo.utils.ray_utils import ray_noset_visible_devices, get_physical_gpu_id
 from ppo.utils.logging_utils import init_logger
+from ppo.utils.curriculum import CurriculumManager
 from ppo.envs.base import BaseEnv, EnvOutput
 from ppo.utils.fsdp_utils import (
     get_fsdp_wrap_policy_openvla,
@@ -789,6 +790,7 @@ class PolicyTrainerRayProcess(RayProcess):
         processor: ProcessorMixin,
         vllm_engines: List[ray.actor.ActorHandle],
         metrics_queue: Queue,
+        curriculum=None,
     ):
         """Main training loop for PPO"""
         logger.info("Starting training loop")
@@ -801,10 +803,25 @@ class PolicyTrainerRayProcess(RayProcess):
         # Environment
         local_rollout_indices = slice(self._rank * args.local_rollout_batch_size, (self._rank + 1) * args.local_rollout_batch_size)
 
-        args.task_ids = args.task_ids[local_rollout_indices]
+        # If a CurriculumManager actor is provided, request a batch of task ids for this actor.
+        # Fall back to the preconfigured args.task_ids slice if the curriculum call fails or is None.
+        if curriculum is not None:
+            try:
+                sampled = ray.get(curriculum.get_batch.remote(args.local_rollout_batch_size))
+                # Ensure it's a python list
+                args.task_ids = list(sampled)
+            except Exception:
+                logger.exception("Failed to get batch from CurriculumManager; falling back to provided task_ids slice")
+                if args.task_ids is not None:
+                    args.task_ids = args.task_ids[local_rollout_indices]
+        else:
+            if args.task_ids is not None:
+                args.task_ids = args.task_ids[local_rollout_indices]
         args.env_gpu_id = self._rank
         logger.info(f"Current Device ID: {self._rank}; Task IDs: {args.task_ids}")
         train_envs = VLAEnv(cfg=args, mode="train")
+        # Keep a local mapping from env index -> task id for reporting
+        env_task_ids = list(args.task_ids) if args.task_ids is not None else None
         action_dim = train_envs.action_space[0]
 
         padding_side = "right"
@@ -1176,6 +1193,7 @@ class PolicyTrainerRayProcess(RayProcess):
         for training_step in range(resume_training_step, args.num_training_steps):
             episodic_returns = []
             episodic_lengths = []
+            episodic_task_ids = []
             episode += args.rollout_batch_size  # rollout batch size is the number of parallel environments
 
             if training_step != 1:
@@ -1317,11 +1335,17 @@ class PolicyTrainerRayProcess(RayProcess):
                 local_dones = torch.tensor(local_dones, device=device, dtype=torch.float32)
                 scores[step] = local_rewards
 
-                # compute episodic reward
+                # compute episodic reward and collect corresponding task ids (if known)
                 for i in range(args.local_rollout_batch_size):
                     if local_dones[i]:
-                        episodic_returns.append(1.0 if local_rewards[i].item() > 0 else 0.0)
+                        succ = 1.0 if local_rewards[i].item() > 0 else 0.0
+                        episodic_returns.append(succ)
                         episodic_lengths.append(local_infos["step_count_tmp"][i])
+                        if env_task_ids is not None:
+                            try:
+                                episodic_task_ids.append(int(env_task_ids[i]))
+                            except Exception:
+                                episodic_task_ids.append(0)
 
                 local_token_obs["input_ids"] = local_token_obs["input_ids"].to(dtype=torch.long)
                 queries_next = local_token_obs["input_ids"]
@@ -1559,6 +1583,12 @@ class PolicyTrainerRayProcess(RayProcess):
             if accelerator.is_main_process:
                 print_rich_single_line_metrics(metrics)
                 metrics_queue.put((metrics, global_step))
+                # Report episodic outcomes back to curriculum manager (non-blocking)
+                if curriculum is not None and len(episodic_task_ids) > 0:
+                    try:
+                        curriculum.report_results.remote(episodic_task_ids, [int(x) for x in episodic_returns])
+                    except Exception:
+                        logger.exception("Failed to report results to CurriculumManager")
             del (global_metrics, metrics)
             gc.collect()
             torch.cuda.empty_cache()
@@ -1776,12 +1806,18 @@ def main(args: Args):
     print("======== all datasets initialized =========")
 
     refs = []
+    # Instantiate CurriculumManager actor (optional adaptive curriculum)
+    try:
+        curriculum = CurriculumManager.options().remote(num_tasks=args.num_tasks_per_suite, ema_alpha=0.99, tau=0.02)
+    except Exception:
+        curriculum = None
     for i, policy_model in enumerate(policy_group.models):
         refs.append(
             policy_model.train.remote(
                 processor=processor,
                 vllm_engines=vllm_engines,
                 metrics_queue=metrics_queue,
+                curriculum=curriculum,
             )
         )
 
