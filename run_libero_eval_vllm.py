@@ -2,19 +2,6 @@
 run_libero_eval.py
 
 Runs a model in a LIBERO simulation environment.
-
-Usage:
-    # OpenVLA:
-    # IMPORTANT: Set `center_crop=True` if model is fine-tuned with augmentations
-    python experiments/robot/libero/run_libero_eval.py \
-        --model_family openvla \
-        --pretrained_checkpoint <CHECKPOINT_PATH> \
-        --task_suite_name [ libero_spatial | libero_object | libero_goal | libero_10 | libero_90 ] \
-        --center_crop [ True | False ] \
-        --run_id_note <OPTIONAL TAG TO INSERT INTO RUN ID FOR LOGGING> \
-        --use_wandb [ True | False ] \
-        --wandb_project <PROJECT> \
-        --wandb_entity <ENTITY>
 """
 
 import os
@@ -32,8 +19,8 @@ import wandb
 import pprint
 
 from prismatic.models.backbones.llm.prompting import PurePromptBuilder, VicunaV15ChatPromptBuilder, QwenPromptBuilder
-from ppo.envs.libero_env import VLAEnv
-from ppo.utils.vllm_utils2 import create_vllm_engines
+from envs.libero_env import LiberoVecEnv
+from utils.vllm_utils2 import create_vllm_engines
 from vllm import SamplingParams
 import time
 from datetime import datetime
@@ -43,13 +30,12 @@ import threading
 # Append current directory so that interpreter can find experiments.robot
 sys.path.append("../..")
 current_path = os.getcwd()
-print("Workspace:", current_path)
 
 from experiments.robot.openvla_utils import get_processor
 from experiments.robot.robot_utils import (
     set_seed_everywhere,
 )
-from ppo.utils.util import TimingManager
+from utils.util import TimingManager
 
 
 @dataclass
@@ -86,7 +72,7 @@ class GenerateConfig:
     """0 for default libero length"""
     env_gpu_id: int = 0
     """GPU id for the vectorized environments"""
-    query_length: int = 64
+    context_length: int = 64
     """Length of the query"""
     save_video: bool = False
     """Whether to save videos"""
@@ -131,7 +117,7 @@ class GenerateConfig:
     non_stop_penalty: bool = False
     """whether to penalize responses that do not contain `stop_token_id`"""
     number_envs_per_task: int = 1
-    """the number of samples to generate per prompt, useful for easy-star"""
+    """the number of samples to generate per prompt"""
 
     # ray
     vllm_num_engines: int = 1
@@ -155,19 +141,20 @@ def eval_libero(cfg: GenerateConfig) -> None:
         assert cfg.center_crop, "Expecting `center_crop==True` because model was trained with image augmentations!"
     assert not (cfg.load_in_8bit and cfg.load_in_4bit), "Cannot use both 8-bit and 4-bit quantization!"
 
-    # Set random seed
-    set_seed_everywhere(cfg.seed)
+    # NOTE: this may affect the performance.
+    # set_seed_everywhere(cfg.seed)
 
     # [OpenVLA] Set action un-normalization key
     cfg.unnorm_key = cfg.task_suite_name
 
     # Load model
-    max_len = 256 + 50
+    max_len = 256 + cfg.context_length + cfg.response_length
     vllm_engines = create_vllm_engines(
-        cfg.vllm_num_engines,
-        cfg.vllm_tensor_parallel_size,
-        cfg.vllm_enforce_eager,
-        cfg.pretrained_checkpoint,
+        num_engines=cfg.vllm_num_engines,
+        tensor_parallel_size=cfg.vllm_tensor_parallel_size,
+        enforce_eager=cfg.vllm_enforce_eager,
+        pretrain=cfg.pretrained_checkpoint,
+        trust_remote_code=True,
         revision=None,
         seed=cfg.seed,
         enable_prefix_caching=cfg.enable_prefix_caching,
@@ -203,7 +190,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     break
 
                 pixel_values = g_queries_list["pixel_values"]
-                if processor is None:
+                if processor is None:   # use this to avoid loading additional processor
                     prompts = g_queries_list["prompts"]
                     prompts = ["<PAD>" + prompt + "▁" for prompt in prompts]
                     # print(f"🔥🔥🔥 prompts: {prompts}")
@@ -225,7 +212,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                         } for prompt_token_id, pixel_value in zip(prompt_token_ids, pixel_values)
                     ]
 
-                # generation_start_time = time.time()
+                generation_start_time = time.time()
                 actions, response_ids, response_logprobs = ray.get(
                     llm.predict_action.remote(
                         llm_inputs,
@@ -236,30 +223,33 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     )
                 )
                 # print(f"{response_logprobs=}")
-                print(f"🔥🔥🔥 Action generation time: {time.time() - generation_start_time:.2f} seconds")
+                print(
+                    f"🔥🔥🔥 Action generation time: {time.time() - generation_start_time:.2f} s, "
+                    f"with bs: {len(llm_inputs)}"
+                )
                 response_ids_Q.put(actions)
 
     response_ids_Q = Queue(maxsize=1)
-    param_prompt_Q = Queue(maxsize=1)
+    prompt_ids_Q = Queue(maxsize=1)
     thread = threading.Thread(
                 target=vllm_generate,
                 args=(
                     generation_config,
                     response_ids_Q,
-                    param_prompt_Q,
+                    prompt_ids_Q,
                 ),
             )
     thread.start()
     print("vllm generate thread starts")
 
     # Load prompt builder
-    if 'qwen' in cfg.pretrained_checkpoint:
-        prompt_builder_fn = QwenPromptBuilder
-        cprint(f"Using QwenPromptBuilder for QWEN model", "yellow")
-    elif 'v01' in cfg.pretrained_checkpoint:
-        prompt_builder_fn = VicunaV15ChatPromptBuilder
-    else:
-        prompt_builder_fn = PurePromptBuilder
+    # if 'qwen' in cfg.pretrained_checkpoint:
+    #     prompt_builder_fn = QwenPromptBuilder
+    #     cprint(f"Using QwenPromptBuilder for QWEN model", "yellow")
+    # elif 'v01' in cfg.pretrained_checkpoint:
+    #     prompt_builder_fn = VicunaV15ChatPromptBuilder
+    # else:
+    #     prompt_builder_fn = PurePromptBuilder
 
     # Initialize local logging
     # max_pet_name_len = len("openvla-7b")
@@ -296,63 +286,87 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 os.remove(os.path.join(video_dir, f))
 
     # Initialize vectorized environment
-    envs = VLAEnv(cfg, mode="eval")
+    if cfg.task_ids is None:
+        base_task_ids = list(range(cfg.num_tasks_per_suite))
+    else:
+        base_task_ids = cfg.task_ids
+    num_envs = len(base_task_ids) * max(1, int(cfg.number_envs_per_task))
+    task_ids = []
+    for tid in base_task_ids:
+        task_ids.extend([tid] * max(1, int(cfg.number_envs_per_task)))
+
+    eval_envs = LiberoVecEnv(
+        task_suite_name=cfg.task_suite_name,
+        task_ids=task_ids,
+        num_trials_per_task=cfg.num_trials_per_task,
+        seed=cfg.seed,
+        model_family=cfg.model_family,
+        center_crop=cfg.center_crop,
+        rand_init_state=False,
+        num_envs=num_envs,
+        num_steps_wait=cfg.num_steps_wait,
+        max_episode_length=None,
+        resize_size=(224, 224),
+    )
     timer = TimingManager()
 
+
+    total_eval_episodes = sum(len(s) for s in eval_envs.initial_states_list)
+    pbar = tqdm.tqdm(total=total_eval_episodes, desc="Evaluating", unit="episode")
+    completed_so_far = 0
+
     # Main evaluation loop
-    total_episodes = 0
-    total_successes = 0
     pre_thought = None
-    
-    # Reset environments
-    obs, infos = envs.reset()
-        
-    while True:
+    step = 0
+    obs, infos = eval_envs.reset()
+
+    while not eval_envs.is_eval_complete():
         # Batch inference
-        # with torch.no_grad(), timer.timer("model_inference"):
-        #     pixel_values = obs["pixel_values"]
-        #     prompts = obs["prompts"]
-        #     actions, _, _ = get_actions(cfg, model, obs=pixel_values, task_label=prompts, pre_thought=None, processor=processor, prompt_builder_fn=prompt_builder_fn)
-        
-        with timer.timer("model_inference"):
-            generation_start_time = time.time()
-            param_prompt_Q.put(obs)
+        with timer.timer("vllm_generate"):
+            prompt_ids_Q.put(obs)
             actions = response_ids_Q.get()
-            print(f"🔥🔥🔥 Action generation time: {time.time() - generation_start_time:.2f} seconds")
-        
+
         # Step environments
+        cprint(f"🕹️🕹️🕹️ Env {step=}", "cyan")
         with timer.timer("env_step"):
-            next_obs, rewards, dones, infos = envs.step(actions)
-        
-        # Update success count
-        total_successes += sum([r > 0 for r in rewards])
-        
-        # Break if all episodes in batch are done
-        if np.allclose(envs.initial_state_ids, -1):
-        # if next_obs is None:
-            break
-            
+            next_obs, rewards, dones, truncated, infos = eval_envs.step(actions)
+
+        if np.any(dones):
+            completed_status = eval_envs.get_completed_status()
+            current_success_rate = completed_status["success_rate"]
+            current_episodes = completed_status["completed_episodes"]
+            pbar.n = current_episodes
+            pbar.refresh()
+            pbar.set_postfix({
+                'Success Rate': f'{current_success_rate:.3f}',
+            })
+        step += 1
         obs = next_obs
-        
-    total_episodes = cfg.num_trials_per_task * cfg.num_tasks_per_suite
     
-    # Log progress
-    success_rate = total_successes / total_episodes
+    # Compute results
+    eval_infos = eval_envs.get_completed_status()
+    total_episodes = eval_infos["completed_episodes"]
+    success_rate = eval_infos["success_rate"]
+
     print(f"Episodes completed: {total_episodes}")
     print(f"Success rate: {success_rate:.2%}")
     log_file.write(f"Episodes completed: {total_episodes}\n")
     log_file.write(f"Success rate: {success_rate:.2%}\n")
     
-    # Push total metrics and local log file to wandb
     time_infos = timer.get_log()
     log_infos = {
-        "success_rate/total": float(total_successes) / float(total_episodes),
-        "num_episodes/total": total_episodes,
+        "success_rate/total": float(success_rate),
+        "num_episodes/total": int(total_episodes),
     }
+    # Include per-task success rates if available
+    for k, v in eval_infos.items():
+        if k.startswith("task_"):
+            log_infos[f"success_rate/{k}"] = float(v)
     log_infos.update(time_infos)
 
     for k, v in log_infos.items():
         log_file.write(f"{k}: {v}\n")
+    log_file.flush()
     pprint.pprint(log_infos)
 
     if cfg.use_wandb:
@@ -362,10 +376,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
     # Cleanup
     log_file.close()
     timer.close()
-    envs.close()
-    
-    # Cleanup vLLM thread
-    param_prompt_Q.put(None)  # Signal thread to stop
+    eval_envs.close()
+    prompt_ids_Q.put(None)  # Signal thread to stop
     thread.join()  # Wait for thread to finish
     
     ray.shutdown()

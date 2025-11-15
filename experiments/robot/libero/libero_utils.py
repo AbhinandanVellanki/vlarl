@@ -4,6 +4,7 @@ import math
 import os
 
 import imageio
+import cv2
 import numpy as np
 import tensorflow as tf
 from libero.libero import get_libero_path
@@ -25,7 +26,7 @@ def get_libero_env(task, model_family, resolution=256):
     return env, task_description
 
 
-def get_libero_dummy_action(model_family: str):
+def get_libero_dummy_action():
     """Get dummy/no-op action, used to roll out the simulation while the robot does nothing."""
     return [0, 0, 0, 0, 0, 0, -1]
 
@@ -58,8 +59,18 @@ def get_libero_image(obs, resize_size):
     return img
 
 
-def save_rollout_video(rollout_images, idx, success, task_description, log_file=None, mp4_path=None):
-    """Saves an MP4 replay of an episode."""
+def save_rollout_video(rollout_images, idx, success, task_description, mp4_path=None, backend="cv2"):
+    """
+    Saves an MP4 replay of an episode.
+    
+    Args:
+        rollout_images: List of images to save as video
+        idx: Episode index
+        success: Whether the episode was successful
+        task_description: Description of the task
+        mp4_path: Path to save the video (if None, auto-generated)
+        backend: Video backend to use ("imageio" or "cv2")
+    """
     processed_task_description = task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:50]
 
     if mp4_path is None:    # original
@@ -67,13 +78,47 @@ def save_rollout_video(rollout_images, idx, success, task_description, log_file=
         os.makedirs(rollout_dir, exist_ok=True)
         mp4_path = f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}.mp4"
 
-    video_writer = imageio.get_writer(mp4_path, fps=30)
-    for img in rollout_images:
-        video_writer.append_data(img)
-    video_writer.close()
+    if not rollout_images:
+        print("Warning: No images to save in rollout video")
+        return mp4_path
+
+    # Get original dimensions
+    first_img = rollout_images[0]
+    h, w = first_img.shape[:2]
+    
+    if backend == "cv2":
+        new_h = h if h % 2 == 0 else h + 1
+        new_w = w if w % 2 == 0 else w + 1
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        video_writer = cv2.VideoWriter(mp4_path, fourcc, 30.0, (new_w, new_h))
+        for img in rollout_images:
+            if new_h != h or new_w != w:
+                img_resized = resize_image(img, (new_h, new_w))
+            else:
+                img_resized = img
+            img_bgr = cv2.cvtColor(img_resized, cv2.COLOR_RGB2BGR)
+            video_writer.write(img_bgr)
+        video_writer.release()
+
+    elif backend == "imageio":  # imageio backend
+        # Resize images to ensure dimensions are divisible by 16 for video codec compatibility
+        new_h = ((h + 15) // 16) * 16
+        new_w = ((w + 15) // 16) * 16
+        if new_h != h or new_w != w:
+            resized_images = []
+            for img in rollout_images:
+                # print(f"{img.shape=}")    # (224, 504, 3)
+                resized_img = resize_image(img, (new_h, new_w))
+                resized_images.append(resized_img)
+            rollout_images = resized_images
+        video_writer = imageio.get_writer(mp4_path, fps=30)
+        for img in rollout_images:
+            video_writer.append_data(img)
+        video_writer.close()
+    else:
+        raise NotImplementedError(f"Unsupported video saving backend: {backend}")
+    
     print(f"Saved rollout MP4 at path {mp4_path}")
-    if log_file is not None:
-        log_file.write(f"Saved rollout MP4 at path {mp4_path}\n")
     return mp4_path
 
 

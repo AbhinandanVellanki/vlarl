@@ -1,7 +1,10 @@
 # Newly-added
+*.gitignore
+*.whl
+.ssh/
+results/
 tool/
 test/
-results/
 experiments/logs/
 checkpoints/
 logs/
@@ -10,7 +13,7 @@ MODEL/
 DATA/
 *.zip
 *.out
-
+CLAUDE.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -1,17 +1,26 @@
 #!/bin/bash
-# Usage: bash scripts/train_rl_vllm_ray_fsdp.sh <gpus> <task_ids>
-# Example: bash scripts/train_rl_vllm_ray_fsdp.sh 2,3,4,5,6,7 0,1,2,3,4,5,6,7,8,9
-# Expectation: more than 2 A100 GPUs; 6 GPUs for RTX 3090s backward, but the second broadcast will oom
-# Explanation:
+# Usage: 
+#   bash scripts/train_rl_vllm_ray_fsdp.sh <gpus> <task_ids>
+# Example: 
+#   bash scripts/train_rl_vllm_ray_fsdp.sh
+#   bash scripts/train_rl_vllm_ray_fsdp.sh 0,1,2,3,4,5,6,7 0,1,2,3,4,5,6,7,8,9
+# Devices: more than 2 A100 GPUs; 6 GPUs for RTX 3090s backward, but the second broadcast will oom
+# Parameters:
 # Rollout phase: num_envs = local_rollout_batch_size * world_size
 # e.g. 2 GPUs, local_rollout_batch_size = 1, num_envs = 1 * 2 = 2
 # Training phase: num_mini_batches = local_rollout_batch_size * num_steps / local_mini_batch_size
 # e.g. 2 GPUs, local_rollout_batch_size = 1, num_steps = 128, local_mini_batch_size = 8, num_mini_batches = 1 * 128 / 8 = 16
+# Curriculum:
+# task num = 10, initial state num = 50 -> average curriculum prob = 0.002
+# Expectation:
+# 10 tasks / 10 local_rollout_batch_size x 50 initial states x 200 steps x 2.5s = 25000s = ~7 hours
 # ================================
 
 # export NCCL_P2P_DISABLE=1
 # export NCCL_BUFFSIZE=67108864   # 64MiB, default is 4MiB
 # export RAY_DEDUP_LOGS=0 # log all ray instances
+# export VLLM_LOGGING_LEVEL=DEBUG
+
 export MESA_GL_VERSION_OVERRIDE=4.1
 export PYOPENGL_PLATFORM=egl
 export EGL_DEVICE_ID=0  # Set primary GPU for EGL
@@ -19,8 +28,8 @@ export MUJOCO_GL=egl
 export CUDA_LAUNCH_BLOCKING=1
 
 # data
-POSTFIX=spatial
-# POSTFIX=goal
+# POSTFIX=spatial
+POSTFIX=goal
 # POSTFIX=object
 # POSTFIX=10
 DATA_NAME=libero_${POSTFIX}
@@ -45,8 +54,10 @@ MASTER_PORT=12345
 NUM_GPUS=$(echo $GPUS | tr ',' '\n' | wc -l)
 ACTOR_GPUS=$((NUM_GPUS - 1))    # the last GPU is used for vllm
 TOTAL_TASKS=$((ACTOR_GPUS * local_rollout_batch_size))
-TASK_IDS=${2:-$(printf "0,%.0s" $(seq 1 $((TOTAL_TASKS))))} # Repeat 0 TOTAL_TASKS-1 times
-TASK_IDS=${TASK_IDS%,} # Remove trailing comma
+
+# TASK_IDS=${2:-$(printf "0,%.0s" $(seq 1 $((TOTAL_TASKS))))} # Repeat 0 TOTAL_TASKS-1 times
+# TASK_IDS=${TASK_IDS%,} # Remove tailing comma
+TASK_IDS=${2:-"0,1,2,3,4,5,6,7,8,9"}    # All tasks
 
 echo "GPUS=${GPUS}"
 echo "TASK_SUITE_NAME=${DATA_NAME}"
@@ -56,13 +67,16 @@ echo "ACTOR_GPUS=${ACTOR_GPUS}"
 echo "per_device_train_batch_size=${per_device_train_batch_size}"
 echo "local_rollout_batch_size=${local_rollout_batch_size}"
 
-CUDA_VISIBLE_DEVICES=$GPUS python \
-    ppo_vllm_thread_ray_fsdp_vla_v3.py \
-    --vla_path "MODEL/openvla-7b-finetuned-libero-${POSTFIX}" \
+# CUDA_VISIBLE_DEVICES=$GPUS python \
+CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
+    ppo_vllm_ray_fsdp_v3.py \
+    --pretrained_checkpoint "MODEL/openvla-7b-finetuned-libero-${POSTFIX}" \
     --data_root_dir ./data/modified_libero_rlds \
     --dataset_name ${DATA_ROOT} \
     --task_suite_name ${DATA_NAME} \
     --num_trials_per_task 50 \
+    --eval_num_trials_per_task 5 \
+    --task_ids "[${TASK_IDS}]" \
     --run_root_dir "checkpoints/${DATA_ROOT}/root" \
     --adapter_tmp_dir "checkpoints/${DATA_ROOT}/adapter" \
     --per_device_train_batch_size ${per_device_train_batch_size} \
@@ -70,11 +84,10 @@ CUDA_VISIBLE_DEVICES=$GPUS python \
     --local_rollout_batch_size ${local_rollout_batch_size} \
     --local_rollout_forward_batch_size ${local_rollout_batch_size} \
     --actor_num_gpus_per_node "[${ACTOR_GPUS}]" \
-    --task_ids "[${TASK_IDS}]" \
-    --temperature 1.5 \
+    --temperature 1.7 \
     --num_epochs 1 \
-    --value_init_steps 5 \
-    --learning_rate 5e-6 \
+    --value_init_steps 3 \
+    --learning_rate 8e-6 \
     --value_learning_rate 5e-5 \
     --max_grad_norm 1.0 \
     --num_steps 64 \
