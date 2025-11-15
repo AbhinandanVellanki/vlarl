@@ -67,6 +67,10 @@ echo "ACTOR_GPUS=${ACTOR_GPUS}"
 echo "per_device_train_batch_size=${per_device_train_batch_size}"
 echo "local_rollout_batch_size=${local_rollout_batch_size}"
 
+# Number of tasks in this suite (used by CurriculumManager)
+NUM_TASKS=$(echo ${TASK_IDS} | tr ',' '\n' | wc -l)
+echo "NUM_TASKS=${NUM_TASKS}"
+
 # CUDA_VISIBLE_DEVICES=$GPUS python \
 CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     ppo_vllm_ray_fsdp_v3.py \
@@ -77,6 +81,10 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --num_trials_per_task 50 \
     --eval_num_trials_per_task 5 \
     --task_ids "[${TASK_IDS}]" \
+    --use_curriculum True \
+    --num_tasks_per_suite ${NUM_TASKS} \
+    --curriculum_temp 0.5 \
+    --curriculum_min_prob 0.01 \
     --run_root_dir "checkpoints/${DATA_ROOT}/root" \
     --adapter_tmp_dir "checkpoints/${DATA_ROOT}/adapter" \
     --per_device_train_batch_size ${per_device_train_batch_size} \
