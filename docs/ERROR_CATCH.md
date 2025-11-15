@@ -49,4 +49,37 @@ conda install -c menpo glfw3
 
 export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
+
+# test
+python test/test_libero.py
 ```
+
+- vllm error: Fatal Python error: Floating point exception
+Ref: https://github.com/vllm-project/vllm/issues/4392
+
+```bash
+pip install nvidia-cublas-cu12==12.4.5.8
+```
+
+- Bad network case
+Revise config.json:
+```json
+"auto_map": {
+"AutoConfig": "configuration_prismatic.OpenVLAConfig",
+"AutoModelForVision2Seq": "modeling_prismatic.OpenVLAForActionPrediction"
+},
+```
+preprocessor_config.json:
+```json
+"auto_map": {
+"AutoImageProcessor": "processing_prismatic.PrismaticImageProcessor",
+"AutoProcessor": "processing_prismatic.PrismaticProcessor"
+},
+```
+and tokenizer_config.json:
+```json
+"auto_map": {
+"AutoProcessor": "processing_prismatic.PrismaticProcessor"
+},
+```
+Then copy configuration_prismatic.py, processing_prismatic.py and modeling_prismatic.py to the checkpoint folder.
