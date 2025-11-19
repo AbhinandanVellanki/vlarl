@@ -29,7 +29,7 @@ export CUDA_LAUNCH_BLOCKING=1
 
 # data
 # POSTFIX=spatial
-POSTFIX=goal
+POSTFIX=spatial
 # POSTFIX=object
 # POSTFIX=10
 DATA_NAME=libero_${POSTFIX}
@@ -72,7 +72,7 @@ NUM_TASKS=$(echo ${TASK_IDS} | tr ',' '\n' | wc -l)
 echo "NUM_TASKS=${NUM_TASKS}"
 
 # CUDA_VISIBLE_DEVICES=$GPUS python \
-CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
+CUDA_VISIBLE_DEVICES=$GPUS python \
     ppo_vllm_ray_fsdp_v3.py \
     --pretrained_checkpoint "MODEL/openvla-7b-finetuned-libero-${POSTFIX}" \
     --data_root_dir ./data/modified_libero_rlds \
@@ -92,12 +92,11 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --local_rollout_batch_size ${local_rollout_batch_size} \
     --local_rollout_forward_batch_size ${local_rollout_batch_size} \
     --actor_num_gpus_per_node "[${ACTOR_GPUS}]" \
-    --temperature 1.7 \
+    --temperature 1.5 \
     --num_epochs 1 \
-    --value_init_steps 3 \
-    --learning_rate 8e-6 \
-    --value_learning_rate 5e-5 \
-    --max_grad_norm 1.0 \
+    --value_init_steps 5 \
+    --learning_rate 2e-5 \
+    --value_learning_rate 2e-5 \
     --num_steps 64 \
     --max_env_length 150 \
     --total_episodes 100000 \
@@ -110,7 +109,7 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --sharding_strategy "full-shard" \
     --offload True \
     --use_value_model True \
-    --value_model_type film \
+    --value_model_type vla \
     --value_use_lora True \
     --value_lora_rank 32 \
     --norm_adv False \

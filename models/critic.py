@@ -250,7 +250,6 @@ class CriticFilm(nn.Module):
         self.text_encoder = text_encoder
         self.text_feature_dim = 768
         self.bert = text_encoder
-
         
         # FiLM generation layers with layer norm
         self.film_generator = nn.Sequential(
